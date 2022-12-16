@@ -24,6 +24,7 @@ if __name__ == "__main__":
         #   * https://stackoverflow.com/questions/22303812/how-to-parse-sql-queries-and-sub-queries-using-sqlparser-into-python
         #   * https://stackoverflow.com/questions/72087411/simple-way-to-parse-sql-subqueries
         
+        # Asi bude nejprve nutne provest .split(), az pak parsovat jednotlive subqueries?
         statements = sqlparse.parse(query, encoding=encoding)
 
             
