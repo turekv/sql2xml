@@ -1,0 +1,1 @@
+Jediný (podstatný?) rozdíl mezi ASCII souborem uloženým Dia a souborem rozbaleným z komprimovaného .dia zdroje je v uvádění barev vč. průhlednosti (#RRGGBBAA). Dia poslední bajt nejspíš neuložilo, jelikož žádný z obsažených objektů nepoužíval průhlednost.
