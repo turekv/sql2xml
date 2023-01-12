@@ -1,27 +1,33 @@
-import sqlparse
+import sqlparse.sql as sql
+from sqlparse import format, parse
 import sys
 import os
 import traceback
 
 
 class Attribute:    
-    def __init__(self, name, alias=None):
+    def __init__(self, name, alias=None, condition=None):
         self.name = name
-        self.aliases = []
-        if alias != None:
-            self.aliases.append(alias)
+        self.alias = alias
+        # self.aliases = []
+        # if alias != None:
+        #     self.aliases.append(alias)
+        self.condition = condition
 
 
 class Table:
     __next_id__ = 0
+    __next_select_num__ = 0
+    __next_join_num__ = 0
+    __next_generic_num__ = 0
     __tables__ = []
 
-    def __init__(self, name=None, alias=None, attributes=None, comment="", source_sql=""):
+    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment="", source_sql=""):
         self.id = Table.__generate_id__()
         if name != None:
             self.name = name
         else:
-            self.name = self.generate_name()
+            self.name = Table.__generate_name__(name_template)
         self.aliases = []
         if alias != None:
             self.aliases.append(alias)
@@ -33,51 +39,115 @@ class Table:
         self.linked_to_tables_id = []
   
     def __str__(self):
+        indent = "    "
         if len(self.aliases) > 0:
             self.aliases.sort()
-            aliases = ", ".join(self.aliases)
+            aliases = f"\n{indent}{indent}".join(self.aliases)
         else:
-            aliases = "<none>"
+            aliases = "<žádné>"
         if len(self.attributes) > 0:
             attribute_collection = []
             for attr in self.attributes:
-                if len(attr.aliases) > 0:
-                    attr.aliases.sort()
-                    attr_aliases = ", ".join(attr.aliases)
-                    attribute_collection.append(f"{attr.name} (aliases: {attr_aliases})")
+                # if len(attr.aliases) > 0:
+                #     attr.aliases.sort()
+                #     attr_aliases = ", ".join(attr.aliases)
+                #     attribute_collection.append(f"{attr.name} (aliasy: {attr_aliases})")
+                if attr.condition != None:
+                    condition = f" {attr.condition}"
                 else:
-                    attribute_collection.append(attr.name)
+                    condition = ""
+                if attr.alias != None:
+                    alias = f" (alias: {attr.alias})"
+                else:
+                    alias = ""
+                attribute_collection.append(f"{attr.name}{condition}{alias}")
             attribute_collection.sort()
-            attributes = "\n    ".join(attribute_collection)
+            attributes = f"\n{indent}{indent}".join(attribute_collection)
         else:
-            attributes = "<none>"
+            attributes = "<žádné>"
+        # if len(self.linked_to_tables_id) > 0:
+        #     self.linked_to_tables_id.sort()
+        #     linked_ids = ", ".join(str(id) for id in self.linked_to_tables_id)
+        # else:
+        #     linked_ids = "<žádné>"
         if len(self.linked_to_tables_id) > 0:
-            self.linked_to_tables_id.sort()
-            linked_ids = ", ".join(self.linked_to_tables_id)
+            name_collection = []
+            for id in self.linked_to_tables_id:
+                for table in Table.__tables__:
+                    if table.id == id:
+                        name_collection.append(f"{table.name} (ID {id})")
+                        break
+            names = f"\n{indent}{indent}".join(name_collection)
         else:
-            linked_ids = "<none>"
-        return f"TABLE {self.name}, ID {self.id}\n  Aliases: {aliases}\n  Attributes:\n    {attributes}\n  Linked to table IDs: {linked_ids}\n  Comment: {self.comment}"
+            names = "<žádné>"
+        max_comment_length = 50
+        if len(self.comment) < max_comment_length:
+            comment = self.comment
+        else:
+            comment = self.comment[:(max_comment_length - 6)] + " [...]"
+        comment = comment.replace("\n", " ")
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\""
     
+    # @classmethod
+    # def add_alias_to_table_name(cls, name, alias):
+    #     # Pokud tabulka existuje, prida k ni alias; pokud naopak zatim neexistuje, vytvori novou tabulku s patricnym aliasem
+    #     if name == alias:
+    #         return False
+    #     for tbl in Table.__tables__:
+    #         if (name == tbl.name
+    #                 or (name in tbl.aliases and alias != tbl.name)):
+    #             return tbl.add_alias(alias)
+    #     Table.__tables__.append(Table(name=name, alias=alias))
+    #     return True
+
     @classmethod
-    def add_alias_to_table_name(cls, name, alias):
-        if name == alias:
+    def add_alias_to_table(cls, id, alias):
+        if id < 0 or alias == None:
             return False
-        for tbl in Table.__tables__:
-            if (name == tbl.name
-                    or (name in tbl.aliases and alias != tbl.name)):
-                return tbl.add_alias(alias)
+        for table in Table.__tables__:
+            if id == table.id:
+                return table.add_alias(alias)
         return False
     
-    def __generate_id__():
+    @classmethod
+    def get_table_by_name(cls, name):
+        if name == None:
+            return None
+        for table in Table.__tables__:
+            if (name == table.name or name in table.aliases):
+                return table
+        return None
+    
+    @classmethod
+    def get_table_by_id(cls, id):
+        if id == None or id < 0:
+            return None
+        for table in Table.__tables__:
+            if id == table.id:
+                return table
+        return None
+    
+    @classmethod
+    def __generate_id__(cls):
         id = Table.__next_id__
         Table.__next_id__ += 1
         return id
     
-    def generate_name(self):
-        self.name = f"Select-{self.id}"
+    @classmethod
+    def __generate_name__(cls, name_template):
+        if name_template == "select":
+            name = f"select-{Table.__next_select_num__}"
+            Table.__next_select_num__ += 1
+        elif name_template == "join":
+            name = f"join-{Table.__next_join_num__}"
+            Table.__next_join_num__ += 1
+        else:
+            name = f"table-{Table.__next_generic_num__}"
+            Table.__next_generic_num__ += 1
+        return name
     
     def add_alias(self, alias):
-        if alias in self.aliases:
+        if alias == None or self.name == alias or alias in self.aliases:
             return False
         self.aliases.append(alias)
         return True
@@ -95,16 +165,16 @@ class Table:
         self.linked_to_tables_id.append(id)
         return True
     
-    def link_to_table_name(self, name: str):
-        id = -1
-        for tbl in Table.__tables__:
-            if name == tbl.name or name in tbl.aliases:
-                id = tbl.id
-                break
-        if id < 0:
-            return False
-        self.linked_to_tables_id.append(id)
-        return True
+    # def link_to_table_name(self, name: str):
+    #     id = -1
+    #     for table in Table.__tables__:
+    #         if name == table.name or name in table.aliases:
+    #             id = table.id
+    #             break
+    #     if id < 0 or id in self.linked_to_tables_id:
+    #         return False
+    #     self.linked_to_tables_id.append(id)
+    #     return True
     
     # def unlink_from_table_id(self, id):
     #     try:
@@ -113,162 +183,279 @@ class Table:
     #     except:
     #         return False
 
+    def update_attributes(self, attributes):
+        new_attributes = []
+        for a in attributes:
+            add_attrib = True
+            for ta in self.attributes:
+                if (a.name == ta.name
+                        or a.name == ta.alias
+                        or a.alias == ta.name
+                        or ((a.alias != None or ta.alias != None) and a.alias == ta.alias)):
+                    ta.condition = a.condition
+                    add_attrib = False
+                    break
+            if add_attrib:
+                new_attributes.append(a)
+        self.attributes.extend(new_attributes)
+
 
 def get_name_and_alias(t):
     # Struktura: name [ whitespace(s) [ AS whitespace(s) ] alias ]
     # kde "name" muze byt Identifier, prip. Function
-    idx = 0
+    i = 0
     components = []
-    while idx < len(t.tokens) and not t.tokens[idx].is_whitespace:
-        components.append(t.tokens[idx].value)
-        idx += 1
+    while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+        components.append(t.tokens[i].value)
+        i += 1
     name = "".join(components)
-    while (idx < len(t.tokens) and (t.tokens[idx].is_whitespace
-            or (t.tokens[idx].ttype == sqlparse.sql.T.Keyword and t.tokens[idx].normalized == "AS"))):
-        idx += 1
+    while (i < len(t.tokens) and (t.tokens[i].is_whitespace
+            or (t.tokens[i].ttype == sql.T.Keyword and t.tokens[i].normalized == "AS"))):
+        i += 1
     alias = None
     components = []
-    while idx < len(t.tokens):
-        components.append(t.tokens[idx].value)
-        idx += 1
+    while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+        components.append(t.tokens[i].value)
+        i += 1
     if len(components) > 0:
         alias = "".join(components)
     return name, alias
 
 
-def processToken(t, is_within):
+def get_attribute_conditions(t):
+
+    # TODO: hledani omezeni u atributu NEFUNGUJE SPRAVNE (ignoruje podminku pro hodnotu BETWEEN apod.) --> nutno resit jinak nez vyhradne pomoci Comparison!
+
+    attributes = []
+    i = 0
+    token = t.token_first(skip_ws=True, skip_cm=False)
+    while token != None:
+        if isinstance(token, sql.Comparison):
+            components = []
+            j = 0
+            while j < len(token.tokens) and not token.tokens[j].is_whitespace:
+                components.append(token.tokens[j].value)
+                j += 1
+            name = "".join(components)
+            while j < len(token.tokens) and token.tokens[j].ttype != sql.T.Comparison:
+                j += 1
+            operator = token.tokens[j].normalized.upper()  # Jinak by napr. "in" bylo malymi pismeny
+            j += 1
+            while j < len(token.tokens) and token.tokens[j].is_whitespace:
+                j += 1
+            components = []
+            while j < len(token.tokens) and not token.tokens[j].is_whitespace:
+                components.append(token.tokens[j].value)
+                j += 1
+            value = "".join(components)
+            attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
+            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+        elif isinstance(token, sql.Identifier):
+            name = token.value
+            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+            operator = token.normalized
+            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+            components = []
+            while token != None:
+                if token.ttype == sql.T.Keyword:
+                    components.append(token.normalized)
+                elif token.ttype in sql.T.Literal:
+                    components.append(token.value)
+                else:
+                    break
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+            value = " ".join(components)
+            attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
+        
+        # TODO: comment na konci?
+
+        else:
+            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+    return attributes
+
+
+def process_with_element(t):
+    # Struktura t.tokens: Identifier [ [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier [ ... ] ]
+    if isinstance(t, sql.Identifier):
+        # Struktura obj.tokens: name whitespace(s) [AS whitespace(s) ] parenthesis-SELECT [ whitespace(s) [ comment ] ]
+        source_sql = t.value
+        name = t.tokens[0].value
+        i = 1
+        while i < len(t.tokens) and not isinstance(t.tokens[i], sql.Parenthesis):
+            i += 1
+        # Zpracovani zavorky se SELECT zatim preskocime -- nejprve vyrobime patricnou tabulku, jejich atributy budou potom doplneny
+        last_token = t.tokens[-1]
+        if (isinstance(last_token, sql.Comment)
+                or last_token.ttype == sql.T.Comment.Single
+                or last_token.ttype == sql.T.Comment.Multiline):
+            comment = last_token.value
+        else:
+            comment = ""
+        table = Table(name=name, comment=comment, source_sql=source_sql)
+        Table.__tables__.append(table)
+        # Nyni doresime zavorku, odkaz na jiz vytvorenou tabulku predame
+        process_statement(t.tokens[i], table)                    
+
+
+        # TODO: zajima nas i comment NAD definici bloku, ktery ale je predchozim tokenem!
+
+
+def process_token(t, is_within=None):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
     if is_within == "select":
         attributes = []
-        if isinstance(t, sqlparse.sql.Identifier):
-            attributes.append(Attribute(*get_name_and_alias(t)))
-        elif isinstance(t, sqlparse.sql.IdentifierList):
-            for obj in t.tokens:
-                if isinstance(obj, sqlparse.sql.Identifier):
-                    attributes.append(Attribute(*get_name_and_alias(obj)))
+        if isinstance(t, sql.Identifier):
+            name, alias = get_name_and_alias(t)
+            attributes.append(Attribute(name=name, alias=alias))
+        elif isinstance(t, sql.IdentifierList):
+            for token in t.tokens:
+                if isinstance(token, sql.Identifier):
+                    name, alias = get_name_and_alias(token)
+                    attributes.append(Attribute(name=name, alias=alias))
+        elif t.ttype == sql.T.Wildcard:
+            attributes.append(Attribute(name="*"))
         return attributes
     if is_within == "from":
-        name, alias = get_name_and_alias(t)
-        Table.add_alias_to_table_name(name, alias)
-        tbl = Table()
-        tbl.generate_name()
-        tbl.link_to_table_name(name)
-        return tbl
+        if isinstance(t.tokens[0], sql.Parenthesis):
+            # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias ]
+            table = Table(name_template="select")
+            i = 1
+            while (i < len(t.tokens) and (t.tokens[i].is_whitespace
+            or (t.tokens[i].ttype == sql.T.Keyword and t.tokens[i].normalized == "AS"))):
+                i += 1
+            components = []
+            while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+                components.append(t.tokens[i].value)
+                i += 1
+            if len(components) > 0:
+                table.add_alias("".join(components))
+            Table.__tables__.append(table)
+            process_statement(t.tokens[0], table)
+            return table
+        else:
+            return get_name_and_alias(t)
+    if is_within == "join":
+        return get_name_and_alias(t)
     if is_within == "with":
-        if isinstance(t, sqlparse.sql.Identifier):
-            pass
-
-
-        elif isinstance(t, sqlparse.sql.IdentifierList):
-            for obj in t.tokens:
-                if isinstance(obj, sqlparse.sql.Identifier):
-                    
-                    # TODO: zajima nas i comment NAD definici bloku, ktery ale je predchozim tokenem!!!
-                    
-                    # Struktura obj.tokens: name whitespace(s) [AS whitespace(s) ] parenthesis-SELECT [ whitespace(s) [ comment ] ]
-                    # kde "name" je Identifier
-
-
-                    pass
-
-        # TODO bude vracet list[Table]? Nebo jak se vyresi pridani jedno ci vice tabulek?
-
-
-    if isinstance(t, sqlparse.sql.IdentifierList):
-        for st in t:
-            processToken(st, is_within)
+        if isinstance(t, sql.Identifier):
+            process_with_element(t)
+        elif isinstance(t, sql.IdentifierList):
+            for token in t.tokens:
+                process_with_element(token)
+        return None
+    if is_within == "on":
+        return get_attribute_conditions(t)
+    if isinstance(t, sql.IdentifierList):
+        for token in t:
+            process_token(token, is_within)
         return None
         
-        
+
+def process_statement(s, table=None):
+    # CTE ... Common Table Expression (WITH, ...)
+    # DDL ... Data Definition Language (...)
+    # DML ... Data Manipulation Language (SELECT, ...)
+    i = 0
+    t = s.token_first(skip_ws=True, skip_cm=False)
+    is_within = None
+    last_comment = ""
+    while t != None:
+        # Nestaci testovat pouze isinstance(t, Comment)
+        if (isinstance(t, sql.Comment)
+                or t.ttype == sql.T.Comment.Single
+                or t.ttype == sql.T.Comment.Multiline):
+            last_comment = t.value  # TODO: DORESIT -------------------------------------
+        elif (t.ttype == sql.T.Keyword and t.normalized == "GROUP BY"
+                or t.ttype == sql.T.Keyword and t.normalized == "ORDER BY"):
+            # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
+
+            # TODO: LIMIT? OFFSET? DESC? jina klicova slova? Slo by vyrešit jen kontrolou na typ "Keyword"?
+
+            # TODO: klicova slova mohou mit vicero parametru --> nestaci vzdy preskocit pouze jeden nasl. token!!! TEDY: jaky typ tokenu je nutno najit, nez lze pokracovat v analyze dotazu?
+
+            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+        elif t.ttype == sql.T.CTE and t.normalized == "WITH":
+            is_within = "with"
+        elif t.ttype == sql.T.DML and t.normalized == "SELECT":
+            is_within = "select"
+            # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
+            if table == None:
+                table = Table(name_template="select")
+                Table.__tables__.append(table)
+        elif t.ttype == sql.T.Keyword and t.normalized == "FROM":
+            is_within = "from"
+        elif t.ttype == sql.T.Keyword and "JOIN" in t.normalized:
+            is_within = "join"
+        elif isinstance(t, sql.Where):
+            table.update_attributes(get_attribute_conditions(t))
+        elif t.ttype == sql.T.Keyword and t.normalized == "ON":
+            is_within = "on"
+        elif not t.ttype == sql.T.Punctuation:
+            obj = process_token(t, is_within)
+            if obj != None:
+                if isinstance(obj, list) and isinstance(obj[0], Attribute):
+                    if is_within == "on":
+                        join_table.update_attributes(obj)
+
+                        # TODO: mozna updatovat attribs v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
+
+                    else:
+                        table.attributes.extend(obj)
+                elif isinstance(obj, tuple) and isinstance(obj[0], str):
+                    # Najdeme zdrojovou tabulku, odkud se berou data, a pridame k ni alias
+                    src_table = Table.get_table_by_name(obj[0])
+                    if src_table == None:
+                        src_table = Table(name=obj[0], alias=obj[1])
+                        Table.__tables__.append(src_table)
+                    else:
+                        src_table.add_alias(obj[1])
+                    # Pokud aktualne resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
+                    if is_within == "join":
+                        join_table = Table(name_template="join")
+                        Table.__tables__.append(join_table)
+                        # Zavislosti: table --> join_table --> src_table
+                        table.link_to_table_id(join_table.id)
+                        join_table.link_to_table_id(src_table.id)
+                    else:
+                        table.link_to_table_id(src_table.id)
+                elif isinstance(obj, Table):
+                    table.link_to_table_id(obj.id)
+            is_within = None
+        (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        sourceSQL = str(sys.argv[0])
+        source_sql = str(sys.argv[0])
         encoding = str(sys.argv[1])
     else:
         # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8 apod.)\n")
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        sourceSQL = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # sourceSQL = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
+        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         encoding = "utf-8"
-        # sourceSQL = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
+        # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # encoding = "ansi"
     
     try:
         print()
-        with open(sourceSQL, mode="r", encoding=encoding) as file:
+        with open(source_sql, mode="r", encoding=encoding) as file:
             query = "".join(file.readlines())
         
         # # VYPSANI PUVODNIHO DOTAZU V PREFORMATOVANEM STAVU
         # # Nejprve s komentari...
-        # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (s komentáři):\n-----------------------------------\n{sqlparse.format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=False)}\n")
+        # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (s komentáři):\n-----------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=False)}\n")
         # # ... pak i bez nich, jelikoz jejich vypis mnohdy neni idealni (nektera zalomeni radku jsou orezana apod.)
-        # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{sqlparse.format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n")
+        # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n")
 
-        # CTE ... Common Table Expression (WITH, ...)
-        # DDL ... Data Definition Language (...)
-        # DML ... Data Manipulation Language (SELECT, ...)
-        statements = sqlparse.parse(query, encoding=encoding)
+        statements = parse(query, encoding=encoding)
         for s in statements:
-            idx = 0
-            # token_first() vraci pouze token
-            t = s.token_first(skip_ws=True, skip_cm=False)
-            is_within = None
-            last_comment = ""
-            last_attibutes = None
-            while t != None:
-                # Nestaci testovat pouze isinstance(t, Comment)
-                if (isinstance(t, sqlparse.sql.Comment)
-                        or t.ttype == sqlparse.sql.T.Comment.Single
-                        or t.ttype == sqlparse.sql.T.Comment.Multiline):
-                    last_comment = t.value
-                elif (t.ttype == sqlparse.sql.T.Keyword and t.normalized == "GROUP BY"
-                        or t.ttype == sqlparse.sql.T.Keyword and t.normalized == "ORDER BY"):
-                    # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
-
-                    # TODO: LIMIT? OFFSET? WHERE? DESC? jina klicova slova? Slo by vyrešit jen kontrolou na typ "Keyword"?
-
-                    # TODO: klicova slova mohou mit vicero parametru --> nestaci vzdy preskocit pouze jeden nasl. token!!! TEDY: jaky typ tokenu je nutno najit, nez lze pokracovat v analyze dotazu?
-
-                    # token_next() vraci tuple
-                    (idx, t) = s.token_next(idx, skip_ws=True, skip_cm=False)
-                elif t.ttype == sqlparse.sql.T.CTE and t.normalized == "WITH":
-                    is_within = "with"
-                elif t.ttype == sqlparse.sql.T.DML and t.normalized == "SELECT":
-                    is_within = "select"
-                elif t.ttype == sqlparse.sql.T.Keyword and t.normalized == "FROM":
-                    is_within = "from"
-                else:
-                    obj = processToken(t, is_within)
-                    if obj != None:
-                        if isinstance(obj, Table):
-                            obj.attributes.extend(last_attibutes)
-                            Table.__tables__.append(obj)
-                        elif isinstance(obj, list) and isinstance(obj[0], Attribute):
-                            last_attibutes = obj
-                        else:
-                            last_attibutes = None
-                    is_within = None
-
-
-                # token_next() vraci tuple
-                (idx, t) = s.token_next(idx, skip_ws=True, skip_cm=False)
-
-
-            for tbl in Table.__tables__:
-                print(f"{tbl}\n")
-            
-
+            process_statement(s)
+        for tbl in Table.__tables__:
+            print(f"{tbl}\n")
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
-        os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)!
-
-
-# VIZ:
-#    * https://stackoverflow.com/questions/22303812/how-to-parse-sql-queries-and-sub-queries-using-sqlparser-into-python
-#    * https://stackoverflow.com/questions/72087411/simple-way-to-parse-sql-subqueries
-#    * https://stackoverflow.com/questions/69746550/get-query-tree-hierarchy-using-python-sqlparse
-#    * SQLGLOT? ( https://stackoverflow.com/questions/67704594/sqlparse-issue-with-the-wildcard-like-condition --> https://github.com/tobymao/sqlglot )
+        os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
