@@ -431,16 +431,23 @@ def process_statement(s, table=None, known_attribute_aliases=False):
             
             # TODO: DORESIT
 
-        elif t.ttype == sql.T.Keyword and (t.normalized == "GROUP BY"
-                or t.normalized == "ORDER BY"):
-            # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
+        elif t.ttype == sql.T.Keyword:
+            if t.normalized == "FROM":
+                is_within = "from"
+            elif "JOIN" in t.normalized:
+                is_within = "join"
+                sql_components = []
+            elif t.normalized == "ON":
+                is_within = "on"
+            elif t.normalized == "GROUP BY" or t.normalized == "ORDER BY":
+                # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
 
-            # TODO: LIMIT? OFFSET? DESC? jina klicova slova?
+                # TODO: LIMIT? OFFSET? DESC? jina klicova slova?
 
-            # TODO: klicova slova mohou mit vicero parametru --> nestaci vzdy preskocit pouze jeden nasl. token!!! TEDY: jaky typ tokenu je nutno najit, nez lze pokracovat v analyze dotazu?
+                # TODO: klicova slova mohou mit vicero parametru --> nestaci vzdy preskocit pouze jeden nasl. token!!! TEDY: jaky typ tokenu je nutno najit, nez lze pokracovat v analyze dotazu?
 
-            sql_components.append(t.value)
-            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                sql_components.append(t.value)
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             is_within = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
@@ -450,15 +457,8 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                 table = Table(name_template="select")
                 Table.__tables__.append(table)
             sql_components = []
-        elif t.ttype == sql.T.Keyword and t.normalized == "FROM":
-            is_within = "from"
-        elif t.ttype == sql.T.Keyword and "JOIN" in t.normalized:
-            is_within = "join"
-            sql_components = []
         elif isinstance(t, sql.Where):
             table.update_attributes(get_attribute_conditions(t))
-        elif t.ttype == sql.T.Keyword and t.normalized == "ON":
-            is_within = "on"
         elif not t.ttype == sql.T.Punctuation:
             obj = process_token(t, is_within)
             if obj != None:
