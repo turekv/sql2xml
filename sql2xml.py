@@ -90,7 +90,7 @@ class Table:
             source_sql = self.source_sql
         else:
             source_sql = self.source_sql[:(max_snippet_length - 6)] + " [...]"
-        source_sql = source_sql.replace("\n  ", " ")
+        source_sql = source_sql.replace("\n", " ")
         return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
     
     # @classmethod
@@ -469,7 +469,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         # TODO: mozna updatovat attribs v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
 
                         sql_components.append(t.value)
-                        join_table.source_sql = "\n  ".join(sql_components).strip()
+                        join_table.source_sql = "\n".join(sql_components).strip()
                     elif known_attribute_aliases:
                         if len(obj) < len(table.attributes):
                             raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
@@ -515,7 +515,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
     if len(sql_components) > 0 and sql_components[0].lower() == "select":
         if sql_components[-1] == ")":
             sql_components.pop()
-        table.source_sql = "\n  ".join(sql_components).strip()
+        table.source_sql = "\n".join(sql_components).strip()
 
 
 if __name__ == "__main__":
