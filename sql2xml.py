@@ -431,8 +431,8 @@ def process_statement(s, table=None, known_attribute_aliases=False):
             
             # TODO: DORESIT
 
-        elif (t.ttype == sql.T.Keyword and t.normalized == "GROUP BY"
-                or t.ttype == sql.T.Keyword and t.normalized == "ORDER BY"):
+        elif t.ttype == sql.T.Keyword and (t.normalized == "GROUP BY"
+                or t.normalized == "ORDER BY"):
             # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
 
             # TODO: LIMIT? OFFSET? DESC? jina klicova slova?
@@ -527,8 +527,8 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        source_sql = "./test-files/sql_parse_pokus__utf8.sql"
+        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         encoding = "utf-8"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
