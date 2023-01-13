@@ -80,13 +80,18 @@ class Table:
             names = f"\n{indent}{indent}".join(name_collection)
         else:
             names = "<žádné>"
-        max_comment_length = 50
-        if len(self.comment) < max_comment_length:
+        max_snippet_length = 50
+        if len(self.comment) < max_snippet_length:
             comment = self.comment
         else:
-            comment = self.comment[:(max_comment_length - 6)] + " [...]"
+            comment = self.comment[:(max_snippet_length - 6)] + " [...]"
         comment = comment.replace("\n", " ")
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\""
+        if len(self.source_sql) < max_snippet_length:
+            source_sql = self.source_sql
+        else:
+            source_sql = self.source_sql[:(max_snippet_length - 6)] + " [...]"
+        source_sql = source_sql.replace("\n", " ")
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL zdroj:\n{indent}{indent}\"{source_sql}\""
     
     # @classmethod
     # def add_alias_to_table_name(cls, name, alias):
