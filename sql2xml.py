@@ -5,24 +5,23 @@ import os
 import traceback
 
 
-class Attribute:    
-    def __init__(self, name, alias=None, condition=None):
+class Attribute:
+    def __init__(self, name, alias=None, condition=None, comment=None):
         self.name = name
         self.alias = alias
         # self.aliases = []
         # if alias != None:
         #     self.aliases.append(alias)
         self.condition = condition
+        self.comment = comment
 
 
 class Table:
     __next_id__ = 0
-    __next_select_num__ = 0
-    __next_join_num__ = 0
-    __next_generic_num__ = 0
+    __next_template_num__ = {}
     __tables__ = []
 
-    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment="", source_sql=""):
+    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment_before=None, comment_after=None, source_sql=None):
         self.id = Table.__generate_id__()
         if name != None:
             self.name = name
@@ -34,10 +33,11 @@ class Table:
         self.attributes = []
         if attributes != None:
             self.attributes.extend(attributes)
-        self.comment = comment
+        self.comment_before = comment_before
+        self.comment_after = comment_after
         self.source_sql = source_sql
         self.linked_to_tables_id = []
-  
+
     def __str__(self):
         indent = "    "
         if len(self.aliases) > 0:
@@ -81,18 +81,29 @@ class Table:
         else:
             names = "<žádné>"
         max_snippet_length = 50
-        if len(self.comment) < max_snippet_length:
-            comment = self.comment
+        if self.comment_before == None:
+            comment_before = ""
+        elif len(self.comment_before) < max_snippet_length:
+            comment_before = self.comment_before
         else:
-            comment = self.comment[:(max_snippet_length - 6)] + " [...]"
-        comment = comment.replace("\n", " ")
-        if len(self.source_sql) < max_snippet_length:
+            comment_before = self.comment_before[:(max_snippet_length - 6)] + " [...]"
+        comment_before = comment_before.replace("\n", " ")
+        if self.comment_after == None:
+            comment_after = ""
+        elif len(self.comment_after) < max_snippet_length:
+            comment_after = self.comment_after
+        else:
+            comment_after = self.comment_after[:(max_snippet_length - 6)] + " [...]"
+        comment_after = comment_after.replace("\n", " ")
+        if self.source_sql == None:
+            source_sql = ""
+        elif len(self.source_sql) < max_snippet_length:
             source_sql = self.source_sql
         else:
             source_sql = self.source_sql[:(max_snippet_length - 6)] + " [...]"
         source_sql = source_sql.replace("\n", " ")
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
-    
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář před:\n{indent}{indent}\"{comment_before}\"\n{indent}Komentář za:\n{indent}{indent}\"{comment_after}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+
     # @classmethod
     # def add_alias_to_table_name(cls, name, alias):
     #     # Pokud tabulka existuje, prida k ni alias; pokud naopak zatim neexistuje, vytvori novou tabulku s patricnym aliasem
@@ -113,7 +124,7 @@ class Table:
             if id == table.id:
                 return table.add_alias(alias)
         return False
-    
+
     @classmethod
     def get_table_by_name(cls, name):
         if name == None:
@@ -122,7 +133,7 @@ class Table:
             if (name == table.name or name in table.aliases):
                 return table
         return None
-    
+
     @classmethod
     def get_table_by_id(cls, id):
         if id == None or id < 0:
@@ -131,45 +142,47 @@ class Table:
             if id == table.id:
                 return table
         return None
-    
+
     @classmethod
     def __generate_id__(cls):
         id = Table.__next_id__
         Table.__next_id__ += 1
         return id
-    
+
     @classmethod
-    def __generate_name__(cls, name_template):
-        if name_template == "select":
-            name = f"select-{Table.__next_select_num__}"
-            Table.__next_select_num__ += 1
-        elif name_template == "join":
-            name = f"join-{Table.__next_join_num__}"
-            Table.__next_join_num__ += 1
+    def __generate_name__(cls, template):
+        if template == None:
+            template = "table"
         else:
-            name = f"table-{Table.__next_generic_num__}"
-            Table.__next_generic_num__ += 1
-        return name
-    
+            template = template.strip().replace(" ", "-")
+            if len(template) == 0:
+                template = "table"
+        try:
+            num = Table.__next_template_num__[template]
+        except:
+            num = 0
+        Table.__next_template_num__[template] = num + 1
+        return f"{template}-{num}"
+
     def add_alias(self, alias):
         if alias == None or self.name == alias or alias in self.aliases:
             return False
         self.aliases.append(alias)
         return True
-    
+
     # def remove_alias(self, alias):
     #     try:
     #         self.aliases.remove(alias)
     #         return True
     #     except:
     #         return False
-    
+
     def link_to_table_id(self, id: int):
         if id in self.linked_to_tables_id:
             return False
         self.linked_to_tables_id.append(id)
         return True
-    
+
     # def link_to_table_name(self, name: str):
     #     id = -1
     #     for table in Table.__tables__:
@@ -180,7 +193,7 @@ class Table:
     #         return False
     #     self.linked_to_tables_id.append(id)
     #     return True
-    
+
     # def unlink_from_table_id(self, id):
     #     try:
     #         self.linked_to_tables_id.remove(id)
@@ -276,7 +289,7 @@ def get_attribute_conditions(t):
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 value = " ".join(components)
                 attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
-            
+
             # TODO: comment na konci?
 
             else:
@@ -302,14 +315,15 @@ def get_attribute_conditions(t):
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
             value = " ".join(components)
             attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
-    
+
         # TODO: comment na konci?
-    
+
     return attributes
 
 
-def process_with_element(t):
+def process_with_element(t, comment_before=""):
     # Struktura t.tokens: Identifier [ [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier [ ... ] ]
+    comment_after = comment_before  # pokud jsme narazili napr. na Punctuation, musime si komentar ponechat pro referenci
     if isinstance(t, sql.Identifier):
         # Struktura obj.tokens: name whitespace(s) [AS whitespace(s) ] parenthesis-SELECT [ whitespace(s) [ comment ] ]
         # Pokud je uveden jen nazev tabulky, je prvni token typu Name. Jsou-li za nazvem tabulky v zavorkach uvedeny aliasy sloupcu, je prvni token typu Function.
@@ -336,10 +350,10 @@ def process_with_element(t):
         if (isinstance(last_token, sql.Comment)
                 or last_token.ttype == sql.T.Comment.Single
                 or last_token.ttype == sql.T.Comment.Multiline):
-            comment = last_token.value
+            comment_after = last_token.value
         else:
-            comment = ""
-        table = Table(name=name, comment=comment, source_sql=t.value.strip())
+            comment_after = ""
+        table = Table(name=name, comment_before=comment_before, comment_after=comment_after, source_sql=t.value.strip())
         if len(aliases) > 0:
             known_attribute_aliases = True
             # Zatim nastavime jmena na "TBD" s tim, ze tato budou aktualizovana v process_statement(...) nize
@@ -349,14 +363,17 @@ def process_with_element(t):
             known_attribute_aliases = False
         Table.__tables__.append(table)
         # Nyni doresime zavorku, odkaz na jiz vytvorenou tabulku predame
-        process_statement(t.tokens[i], table, known_attribute_aliases)                    
+        process_statement(t.tokens[i], table, known_attribute_aliases)
+    return comment_after
 
 
-        # TODO: zajima nas i comment NAD definici bloku, ktery ale je predchozim tokenem!
-
-
-def process_token(t, is_within=None):
+def process_token(t, is_within=None, comment_before=""):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
+
+    # TODO: SELECT ... FROM TABLE ALIAS komentar
+    # TODO: * JOIN TABLE ALIAS komentar
+    # TODO: vyzobavat a ukladat i komentare k atributum? (napr. "JOIN ... ON ... komentar")
+
     if is_within == "select":
         attributes = []
         if isinstance(t, sql.Identifier):
@@ -393,42 +410,55 @@ def process_token(t, is_within=None):
     #     return get_name_and_alias(t)
     if is_within == "with":
         if isinstance(t, sql.Identifier):
-            process_with_element(t)
+            process_with_element(t, comment_before)
         elif isinstance(t, sql.IdentifierList):
             for token in t.tokens:
-                process_with_element(token)
+                comment_before = process_with_element(token, comment_before)
         return None
     if is_within == "on":
         return get_attribute_conditions(t)
     if isinstance(t, sql.IdentifierList):
-        for token in t:
-            process_token(token, is_within)
+
+        # TODO: ma vubec smysl tady resit predavani komentare?
+
+        for i in range(len(t.tokens)):
+            if i == 0:
+                process_token(t.tokens[i], is_within, comment_before)
+            else:
+
+                # TODO: zde bude asi nutne aktualizovat comment_before podle toho, co je v t.tokens?
+
+                process_token(t.tokens[i], is_within)
+        # for token in t:
+        #     process_token(token, is_within)
         return None
-        
+
 
 def process_statement(s, table=None, known_attribute_aliases=False):
     # CTE ... Common Table Expression (WITH, ...)
     # DDL ... Data Definition Language (...)
     # DML ... Data Manipulation Language (SELECT, ...)
-
-    # TODO: komentare mozna bude lepsi ukladat ve stylu comment_before, comment_after...? (= castecne duplicitne)
-
     i = 0
     t = s.token_first(skip_ws=True, skip_cm=False)
     is_within = None
-    last_comment = ""
+    comment_before = ""
+    token_counter = 10  # Lib. hodnota takova, aby se v cyklu na zacatku NEresetoval comment_before, pokud by SQL dotaz nezacinal komentarem
     # Zdrojovy kod:
     #   * WITH: lze primo pomoci t.value
     #   * JOIN: nutno skladat po castech (oddelene tokeny)
     #   * SELECT: u "( SELECT ... )" sice lze pouzit t.parent.value, ale toto u top-level SELECT (bez uvedeni v zavorkach) ulozi vzdy kompletne cely (!) SQL dotaz, coz neni zadouci. I zde tedy jsou zdrojove kody skladany po castech.
     sql_components = []
     while t != None:
+        token_counter += 1
+        if token_counter == 2:
+            comment_before = ""
         # Nestaci testovat pouze isinstance(t, Comment)
         if (isinstance(t, sql.Comment)
                 or t.ttype == sql.T.Comment.Single
                 or t.ttype == sql.T.Comment.Multiline):
-            last_comment = t.value
-            
+            comment_before = t.value
+            token_counter = 0
+
             # TODO: DORESIT
 
         elif t.ttype == sql.T.Keyword:
@@ -460,7 +490,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
         elif isinstance(t, sql.Where):
             table.update_attributes(get_attribute_conditions(t))
         elif not t.ttype == sql.T.Punctuation:
-            obj = process_token(t, is_within)
+            obj = process_token(t, is_within, comment_before)
             if obj != None:
                 if isinstance(obj, list) and isinstance(obj[0], Attribute):
                     if is_within == "on":
@@ -506,6 +536,9 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(obj.id)
+                    # elif is_within == "with" and len(last_comment) > 0:
+                    #     obj.comment_before = last_comment
+                    #     last_comment = ""
                     else:
                         table.link_to_table_id(obj.id)
             is_within = None
@@ -528,29 +561,45 @@ if __name__ == "__main__":
 
         # DEBUG
         source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
+        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
+        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         encoding = "utf-8"
+        # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
+        # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
+        # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
+        # encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
+        # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
-    
+
+    f = None
     try:
         print()
         with open(source_sql, mode="r", encoding=encoding) as file:
             query = "".join(file.readlines())
-        
+
         # VYPSANI PUVODNIHO DOTAZU V PREFORMATOVANEM STAVU
         # S komentari neni idealni (nektera zalomeni radku jsou orezana apod.)
         # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (s komentáři):\n-----------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=False)}\n")
         # Bez komentaru
-        print(f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n")
+        formatted_sql = f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n"
+        print(formatted_sql)
+        # f = open(source_sql[:-4] + "__vystup.txt", "w")
+        # f.write(formatted_sql + "\n")
 
         statements = parse(query, encoding=encoding)
         for s in statements:
             process_statement(s)
-        
+
         for table in Table.__tables__:
-            print(f"{table}\n")
+            output = f"{table}\n"
+            print(output)
+            # f.write(output + "\n")
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
         os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
+    finally:
+        if f != None:
+            f.close()
