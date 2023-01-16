@@ -1,0 +1,548 @@
+
+PØEFORMÁTOVANÝ DOTAZ (bez komentáøù):
+-------------------------------------
+WITH ctu_tmp AS
+  (SELECT ctu5.typ_ukonceni_predmetu_id,
+          ctu5.zkratka ,
+          ctu5.pozadavek_zapoctu,
+          ctu5.pozadavek_zkousky
+   FROM st01.c_typ_ukonceni_predmetu ctu5
+   WHERE ctu5.status = 9
+     AND (ctu5.zkratka like '%zk%'
+          OR ctu5.zkratka like '%kl%'
+          OR ctu5.zkratka like '%zá%')
+     AND ctu5.pocitat_do_zapsanych = 1 ) ,
+     sepg_tmp AS
+  (SELECT semestr.semestr_id ,
+          pg.program_id,
+          pg.program,
+          cts.ty,
+          cfs.fo,
+          pg.de ,
+          obor.nazev AS obor,
+          obor.zamereni AS zam,
+          rocnik.cislo_rocniku AS ro ,
+          stupen.st
+   FROM
+     (SELECT program.program_id,
+             program.fakulta_id ,
+             program.nazev AS program,
+             program.typ_studia_id ,
+             program.forma_studia_id,
+             program.delka_studia AS de
+      FROM st01.program
+      WHERE program.status = 9
+        AND program.fakulta_id = 4
+        AND program.rok_platnosti = to_char(sysdate, 'YYYY') ) pg
+   INNER JOIN st01.obor ON (obor.program_id = pg.program_id
+                            AND obor.status = 9)
+   INNER JOIN
+     (SELECT stupen.stupen_id,
+             stupen.obor_id,
+             stupen.cislo_stupne AS st
+      FROM st01.stupen
+      WHERE stupen.status = 9) stupen ON stupen.obor_id = obor.obor_id
+   INNER JOIN st01.rocnik ON (rocnik.stupen_id = stupen.stupen_id
+                              AND rocnik.status = 9)
+   INNER JOIN st01.semestr ON (semestr.rocnik_id = rocnik.rocnik_id
+                               AND semestr.status = 9)
+   INNER JOIN
+     (SELECT st01.c_typ_studia.typ_studia_id,
+             st01.c_typ_studia.zkratka AS ty
+      FROM st01.c_typ_studia
+      WHERE st01.c_typ_studia.status = 9) cts ON cts.typ_studia_id = pg.typ_studia_id
+   INNER JOIN
+     (SELECT st01.c_forma_studia.forma_studia_id,
+             st01.c_forma_studia.zkratka AS fo
+      FROM st01.c_forma_studia
+      WHERE st01.c_forma_studia.status = 9) cfs ON cfs.forma_studia_id = pg.forma_studia_id) ,
+     pap_tmp AS
+  (SELECT ap.aktualni_predmet_id ,
+          p.zkratka,
+          ap.nazev,
+          ap.povinnost,
+          ap.kredity ,
+          ap.typ_ukonceni_predmetu_id ,
+          ap.rok ,
+
+     (SELECT listagg(ctp.zkratka, ', ') within GROUP (
+                                                      ORDER BY ctp.zkratka) AS pozn
+      FROM st01.c_typ_ukonceni_predmetu ctp
+      WHERE ctp.typ_ukonceni_predmetu_id = ap.typ_ukonceni_predmetu_id
+        OR EXISTS
+          (SELECT pp.predmet_planu_id
+           FROM st01.predmet_planu pp
+           WHERE pp.status = 9
+             AND pp.aktualni_predmet_id = ap.aktualni_predmet_id
+             AND ctp.typ_ukonceni_predmetu_id = pp.typ_ukonceni_predmetu_id ) ) AS uk_ap_pp_all
+   FROM
+     (SELECT predmet.*
+      FROM st01.predmet
+      WHERE predmet.status = 9
+        AND predmet.fakulta_id = 4
+        AND predmet.predmet_jine_vs = 0 ) p
+   INNER JOIN
+     (SELECT aktualni_predmet.*
+      FROM st01.aktualni_predmet
+      WHERE aktualni_predmet.status = 9
+        AND aktualni_predmet.rok = to_char(sysdate, 'YYYY') ) ap ON ap.predmet_id = p.predmet_id
+   LEFT JOIN ctu_tmp ctua ON ctua.typ_ukonceni_predmetu_id = ap.typ_ukonceni_predmetu_id)
+SELECT pap.aktualni_predmet_id ,
+       pap.zkratka,
+       pap.nazev,
+       pap.rok ,
+       pap.uk_ap_pp_all ,
+
+  (SELECT listagg(cth.popis, ', ') within GROUP (
+                                                 ORDER BY cth.popis) AS pozn
+   FROM st01.zkouska_projekt zp
+   INNER JOIN st01.c_typ_hodnoceni cth ON (cth.typ_hodnoceni_id = zp.typ_atributu )
+   WHERE zp.aktualni_predmet_id = pap.aktualni_predmet_id
+     AND zp.status = 9 ) AS zkouska_projekt
+FROM pap_tmp pap
+WHERE (uk_ap_pp_all not like '%zk%'
+       AND EXISTS
+         (SELECT *
+          FROM st01.zkouska_projekt zp
+          WHERE zp.status = 9
+            AND zp.aktualni_predmet_id = pap.aktualni_predmet_id
+            AND zp.typ_atributu in (5,
+                                    6,
+                                    7,
+                                    55) ) )
+  OR (uk_ap_pp_all not like '%kl%'
+      AND EXISTS
+        (SELECT *
+         FROM st01.zkouska_projekt zp
+         WHERE zp.status = 9
+           AND zp.aktualni_predmet_id = pap.aktualni_predmet_id
+           AND zp.typ_atributu = 9 ) )
+  OR (uk_ap_pp_all not like '%zá%'
+      AND EXISTS
+        (SELECT *
+         FROM st01.zkouska_projekt zp
+         WHERE zp.status = 9
+           AND zp.aktualni_predmet_id = pap.aktualni_predmet_id
+           AND zp.typ_atributu = 8 ) )
+ORDER BY 5
+-------------------------------------
+
+TABULKA ctu_tmp (ID 0)
+    Aliasy:
+        ctua
+    Attributy:
+        ctu5.pocitat_do_zapsanych = 1
+        ctu5.pozadavek_zapoctu
+        ctu5.pozadavek_zkousky
+        ctu5.status = 9
+        ctu5.typ_ukonceni_predmetu_id
+        ctu5.zkratka
+    Vazba na tabulky:
+        st01.c_typ_ukonceni_predmetu (ID 1)
+    Komentáø:
+        "-- as ctu_tmp     -------------------------- [...]"
+    SQL kód:
+        "select ctu5.typ_ukonceni_predmetu_id, ctu5.z [...]"
+
+TABULKA st01.c_typ_ukonceni_predmetu (ID 1)
+    Aliasy:
+        ctu5
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA sepg_tmp (ID 2)
+    Aliasy:
+        <žádné>
+    Attributy:
+        cfs.fo
+        cts.ty
+        obor.nazev (alias: obor)
+        obor.zamereni (alias: zam)
+        pg.de
+        pg.program
+        pg.program_id
+        rocnik.cislo_rocniku (alias: ro)
+        semestr.semestr_id (alias: -- Vraci udaje o studijnim planu, kam je predmet zarazen
+                )
+        stupen.st
+    Vazba na tabulky:
+        select-0 (ID 3)
+        join-0 (ID 6)
+        join-1 (ID 9)
+        join-2 (ID 11)
+        join-3 (ID 13)
+        join-4 (ID 16)
+        join-5 (ID 19)
+    Komentáø:
+        "-- as sepg_tmp     ------------------------- [...]"
+    SQL kód:
+        "sepg_tmp as ( select semestr.semestr_id      [...]"
+
+TABULKA select-0 (ID 3)
+    Aliasy:
+        pg
+    Attributy:
+        program.delka_studia (alias: de)
+        program.fakulta_id = 4 (alias: -- Vraci semestry FSI pro akt. rok
+                      )
+        program.forma_studia_id
+        program.nazev (alias: program)
+        program.program_id
+        program.rok_platnosti = to_char(sysdate, 'YYYY')
+        program.status = 9
+        program.typ_studia_id
+    Vazba na tabulky:
+        st01.program (ID 4)
+    Komentáø:
+        ""
+    SQL kód:
+        "select program.program_id, program.fakulta_i [...]"
+
+TABULKA st01.program (ID 4)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA st01.obor (ID 5)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-0 (ID 6)
+    Aliasy:
+        <žádné>
+    Attributy:
+        obor.program_id = pg.program_id
+        obor.status = 9
+    Vazba na tabulky:
+        st01.obor (ID 5)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join st01.obor on ( obor.program_id =  [...]"
+
+TABULKA select-1 (ID 7)
+    Aliasy:
+        stupen
+    Attributy:
+        stupen.cislo_stupne (alias: st)
+        stupen.obor_id
+        stupen.status = 9
+        stupen.stupen_id
+    Vazba na tabulky:
+        st01.stupen (ID 8)
+    Komentáø:
+        ""
+    SQL kód:
+        "select stupen.stupen_id, stupen.obor_id, stu [...]"
+
+TABULKA st01.stupen (ID 8)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-1 (ID 9)
+    Aliasy:
+        <žádné>
+    Attributy:
+        stupen.obor_id = obor.obor_id
+    Vazba na tabulky:
+        select-1 (ID 7)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join (select stupen.stupen_id, stupen. [...]"
+
+TABULKA st01.rocnik (ID 10)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-2 (ID 11)
+    Aliasy:
+        <žádné>
+    Attributy:
+        rocnik.status = 9
+        rocnik.stupen_id = stupen.stupen_id
+    Vazba na tabulky:
+        st01.rocnik (ID 10)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join st01.rocnik on ( rocnik.stupen_id [...]"
+
+TABULKA st01.semestr (ID 12)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-3 (ID 13)
+    Aliasy:
+        <žádné>
+    Attributy:
+        semestr.rocnik_id = rocnik.rocnik_id
+        semestr.status = 9
+    Vazba na tabulky:
+        st01.semestr (ID 12)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join st01.semestr on ( semestr.rocnik_ [...]"
+
+TABULKA select-2 (ID 14)
+    Aliasy:
+        cts
+    Attributy:
+        st01.c_typ_studia.status = 9
+        st01.c_typ_studia.typ_studia_id
+        st01.c_typ_studia.zkratka (alias: ty)
+    Vazba na tabulky:
+        st01.c_typ_studia (ID 15)
+    Komentáø:
+        ""
+    SQL kód:
+        "select st01.c_typ_studia.typ_studia_id, st01 [...]"
+
+TABULKA st01.c_typ_studia (ID 15)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-4 (ID 16)
+    Aliasy:
+        <žádné>
+    Attributy:
+        cts.typ_studia_id = pg.typ_studia_id
+    Vazba na tabulky:
+        select-2 (ID 14)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join (select st01.c_typ_studia.typ_stu [...]"
+
+TABULKA select-3 (ID 17)
+    Aliasy:
+        cfs
+    Attributy:
+        st01.c_forma_studia.forma_studia_id
+        st01.c_forma_studia.status = 9
+        st01.c_forma_studia.zkratka (alias: fo)
+    Vazba na tabulky:
+        st01.c_forma_studia (ID 18)
+    Komentáø:
+        ""
+    SQL kód:
+        "select st01.c_forma_studia.forma_studia_id,  [...]"
+
+TABULKA st01.c_forma_studia (ID 18)
+    Aliasy:
+        <žádné>
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-5 (ID 19)
+    Aliasy:
+        <žádné>
+    Attributy:
+        cfs.forma_studia_id = pg.forma_studia_id
+    Vazba na tabulky:
+        select-3 (ID 17)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join (select st01.c_forma_studia.forma [...]"
+
+TABULKA pap_tmp (ID 20)
+    Aliasy:
+        pap
+    Attributy:
+        ( select listagg( ctp.zkratka , ', ') 
+                        within group (order by ctp.zkratka)
+                         as pozn
+                    from 
+                         st01.c_typ_ukonceni_predmetu ctp
+                    where ctp.typ_ukonceni_predmetu_id = ap.typ_ukonceni_predmetu_id
+                          or exists
+                             ( select pp.predmet_planu_id
+                               from st01.predmet_planu pp
+                               where pp.status = 9
+                                     and pp.aktualni_predmet_id = ap.aktualni_predmet_id
+                                     and ctp.typ_ukonceni_predmetu_id = pp.typ_ukonceni_predmetu_id
+                             )
+                           ) (alias: uk_ap_pp_all)
+        ap.aktualni_predmet_id
+        ap.kredity
+        ap.nazev
+        ap.povinnost
+        ap.rok (alias: --, ctua.zkratka as uk_ap
+              )
+        ap.typ_ukonceni_predmetu_id
+        p.zkratka
+    Vazba na tabulky:
+        select-4 (ID 21)
+        join-6 (ID 25)
+        join-7 (ID 26)
+    Komentáø:
+        "-- as pap_tmp     -------------------------- [...]"
+    SQL kód:
+        "pap_tmp as (select              ap.aktualni_ [...]"
+
+TABULKA select-4 (ID 21)
+    Aliasy:
+        p
+    Attributy:
+        predmet.*
+        predmet.fakulta_id = 4
+        predmet.predmet_jine_vs = 0
+        predmet.status = 9
+    Vazba na tabulky:
+        st01.predmet (ID 22)
+    Komentáø:
+        ""
+    SQL kód:
+        "select predmet.* from st01.predmet           [...]"
+
+TABULKA st01.predmet (ID 22)
+    Aliasy:
+        -- *** Predmet
+                              
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA select-5 (ID 23)
+    Aliasy:
+        ap
+    Attributy:
+        aktualni_predmet.*
+        aktualni_predmet.rok = to_char(sysdate, 'YYYY')
+        aktualni_predmet.status = 9
+    Vazba na tabulky:
+        st01.aktualni_predmet (ID 24)
+    Komentáø:
+        ""
+    SQL kód:
+        "select aktualni_predmet.* from st01.aktualni [...]"
+
+TABULKA st01.aktualni_predmet (ID 24)
+    Aliasy:
+        -- *** Aktualni_predmet
+                              
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-6 (ID 25)
+    Aliasy:
+        <žádné>
+    Attributy:
+        ap.predmet_id = p.predmet_id
+    Vazba na tabulky:
+        select-5 (ID 23)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join (select aktualni_predmet.* from s [...]"
+
+TABULKA join-7 (ID 26)
+    Aliasy:
+        <žádné>
+    Attributy:
+        ctua.typ_ukonceni_predmetu_id = ap.typ_ukonceni_predmetu_id
+    Vazba na tabulky:
+        ctu_tmp (ID 0)
+    Komentáø:
+        ""
+    SQL kód:
+        "left join ctu_tmp ctua on ctua.typ_ukonceni_ [...]"
+
+TABULKA select-6 (ID 27)
+    Aliasy:
+        <žádné>
+    Attributy:
+        ( select listagg( cth.popis, ', ' ) 
+               within group (order by cth.popis)
+                as pozn
+           from st01.zkouska_projekt zp                                                 -- *** zkouska_projekt
+                inner join st01.c_typ_hodnoceni cth                                     -- *** c_typ_hodnoceni
+                      on ( cth.typ_hodnoceni_id = zp.typ_atributu
+                           -- and cth.status = 9  
+                         )
+           where zp.aktualni_predmet_id = pap.aktualni_predmet_id
+                and zp.status = 9 ) (alias: zkouska_projekt)
+        pap.aktualni_predmet_id
+        pap.nazev
+        pap.rok
+        pap.uk_ap_pp_all
+        pap.zkratka
+    Vazba na tabulky:
+        pap_tmp (ID 20)
+    Komentáø:
+        ""
+    SQL kód:
+        "select -- Dotazovaci cast dotazu       pap.a [...]"
+

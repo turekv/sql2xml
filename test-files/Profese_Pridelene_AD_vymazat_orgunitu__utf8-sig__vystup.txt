@@ -1,0 +1,114 @@
+
+PØEFORMÁTOVANÝ DOTAZ (bez komentáøù):
+-------------------------------------
+WITH prof_tmp AS
+  (SELECT pp.* ,
+          row_number() OVER (PARTITION BY pp.id_profession,
+                                          pp.id_person
+                             ORDER BY pp.disable_auto_remove DESC, pp.ins_ts ASC, pp.orgunitid) AS rn
+   FROM apolloadm.ap_profession pr
+   INNER JOIN apolloadm.ap_pers_prof pp ON (pp.id_profession = pr.id_profession
+                                            AND pr.ad_group = 1
+                                            AND pr.type != 'Z'
+                                            AND pp.status = 9
+                                            AND pr.status = 9)) ,
+     prof_new AS
+  (SELECT pt.* ,
+          decode(pt.rn, 1, NULL, pt.orgunitid) AS orgunitid_new ,
+          decode(pt.rn, 1, pt.status, -1) AS status_new
+   FROM prof_tmp pt )
+SELECT tmp.*
+FROM prof_new tmp
+WHERE EXISTS
+    (SELECT tmp2.status
+     FROM prof_new tmp2
+     WHERE (nvl(tmp2.orgunitid, -1) != nvl(tmp2.orgunitid_new, -1)
+            OR tmp2.status != tmp2.status_new)
+       AND tmp2.id_profession = tmp.id_profession
+       AND tmp2.id_person = tmp.id_person )
+ORDER BY tmp.id_profession,
+         tmp.id_person,
+         tmp.rn
+-------------------------------------
+
+TABULKA prof_tmp (ID 0)
+    Aliasy:
+        pt
+    Attributy:
+        pp.*
+    Vazba na tabulky:
+        apolloadm.ap_profession (ID 1)
+        join-0 (ID 3)
+    Komentáø:
+        "-- as prof_tmp     ------------------------- [...]"
+    SQL kód:
+        "prof_tmp as (select pp.*             , row_n [...]"
+
+TABULKA apolloadm.ap_profession (ID 1)
+    Aliasy:
+        pr
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA apolloadm.ap_pers_prof (ID 2)
+    Aliasy:
+        pp
+    Attributy:
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentáø:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-0 (ID 3)
+    Aliasy:
+        <žádné>
+    Attributy:
+        pp.id_profession = pr.id_profession
+        pp.status = 9
+        pr.ad_group = 1
+        pr.status = 9
+        pr.type != 'Z'
+    Vazba na tabulky:
+        apolloadm.ap_pers_prof (ID 2)
+    Komentáø:
+        ""
+    SQL kód:
+        "inner join apolloadm.ap_pers_prof pp         [...]"
+
+TABULKA prof_new (ID 4)
+    Aliasy:
+        tmp
+    Attributy:
+        decode(pt.rn, 1,null, pt.orgunitid) (alias: orgunitid_new)
+        decode(pt.rn, 1,pt.status, -1) (alias: status_new)
+        pt.* (alias: --            pt.id_pers_prof, pt.id_person, pt.orgunitid
+--            , pt.disable_auto_remove, pt.status, pt.rn
+            )
+    Vazba na tabulky:
+        prof_tmp (ID 0)
+    Komentáø:
+        "-- as prof_new     ------------------------- [...]"
+    SQL kód:
+        "select pt.*  --            pt.id_pers_prof,  [...]"
+
+TABULKA select-0 (ID 5)
+    Aliasy:
+        <žádné>
+    Attributy:
+        tmp.*
+    Vazba na tabulky:
+        prof_new (ID 4)
+    Komentáø:
+        ""
+    SQL kód:
+        "select tmp.* from prof_new tmp where exists  [...]"
+
