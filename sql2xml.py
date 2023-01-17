@@ -13,6 +13,8 @@ class Attribute:
         # if alias != None:
         #     self.aliases.append(alias)
         self.condition = condition
+        if comment != None:
+            comment = comment.strip()
         self.comment = comment
 
 
@@ -21,7 +23,7 @@ class Table:
     __next_template_num__ = {}
     __tables__ = []
 
-    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment_before=None, comment_after=None, source_sql=None):
+    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment=None, source_sql=None):
         self.id = Table.__generate_id__()
         if name != None:
             self.name = name
@@ -33,8 +35,11 @@ class Table:
         self.attributes = []
         if attributes != None:
             self.attributes.extend(attributes)
-        self.comment_before = comment_before
-        self.comment_after = comment_after
+        if comment != None:
+            comment = comment.strip()
+        self.comment = comment
+        if source_sql != None:
+            source_sql = source_sql.strip()
         self.source_sql = source_sql
         self.linked_to_tables_id = []
 
@@ -60,7 +65,11 @@ class Table:
                     alias = f" (alias: {attr.alias})"
                 else:
                     alias = ""
-                attribute_collection.append(f"{attr.name}{condition}{alias}")
+                if attr.comment != None and len(attr.comment) > 0:
+                    attr_comment = f"\n{indent}{indent}{indent}Komentář: \"{Table.__trim_to_length__(attr.comment)}\""
+                else:
+                    attr_comment = ""
+                attribute_collection.append(f"{attr.name}{condition}{alias}{attr_comment}")
             attribute_collection.sort()
             attributes = f"\n{indent}{indent}".join(attribute_collection)
         else:
@@ -80,29 +89,20 @@ class Table:
             names = f"\n{indent}{indent}".join(name_collection)
         else:
             names = "<žádné>"
+        comment = Table.__trim_to_length__(self.comment)
+        source_sql = Table.__trim_to_length__(self.source_sql)
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+    
+    @classmethod
+    def __trim_to_length__(cls, text):
+        if text == None:
+            return ""
+        text = text.replace("\n", " ")
         max_snippet_length = 50
-        if self.comment_before == None:
-            comment_before = ""
-        elif len(self.comment_before) < max_snippet_length:
-            comment_before = self.comment_before
+        if len(text) < max_snippet_length:
+            return text
         else:
-            comment_before = self.comment_before[:(max_snippet_length - 6)] + " [...]"
-        comment_before = comment_before.replace("\n", " ")
-        if self.comment_after == None:
-            comment_after = ""
-        elif len(self.comment_after) < max_snippet_length:
-            comment_after = self.comment_after
-        else:
-            comment_after = self.comment_after[:(max_snippet_length - 6)] + " [...]"
-        comment_after = comment_after.replace("\n", " ")
-        if self.source_sql == None:
-            source_sql = ""
-        elif len(self.source_sql) < max_snippet_length:
-            source_sql = self.source_sql
-        else:
-            source_sql = self.source_sql[:(max_snippet_length - 6)] + " [...]"
-        source_sql = source_sql.replace("\n", " ")
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář před:\n{indent}{indent}\"{comment_before}\"\n{indent}Komentář za:\n{indent}{indent}\"{comment_after}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+            return text[:(max_snippet_length - 6)] + " [...]"
 
     # @classmethod
     # def add_alias_to_table_name(cls, name, alias):
@@ -211,6 +211,7 @@ class Table:
                         or a.alias == ta.name
                         or ((a.alias != None or ta.alias != None) and a.alias == ta.alias)):
                     ta.condition = a.condition
+                    ta.comment = a.comment
                     add_attrib = False
                     break
             if add_attrib:
@@ -218,7 +219,13 @@ class Table:
         self.attributes.extend(new_attributes)
 
 
-def get_name_and_alias(t):
+def is_comment(t):
+    return (isinstance(t, sql.Comment)
+        or t.ttype == sql.T.Comment.Single
+        or t.ttype == sql.T.Comment.Multiline)
+
+
+def get_name_alias_comment(t):
     # Struktura: name [ whitespace(s) [ AS whitespace(s) ] alias ]
     # kde "name" muze byt Identifier, prip. Function
     i = 0
@@ -237,7 +244,11 @@ def get_name_and_alias(t):
         i += 1
     if len(components) > 0:
         alias = "".join(components)
-    return name, alias
+    last_token = t.tokens[-1]
+    if is_comment(last_token):
+        return name, alias, last_token.value
+    else:
+        return name, alias, None
 
 
 def process_comparison(t):
@@ -258,7 +269,11 @@ def process_comparison(t):
         components.append(t.tokens[j].value)
         j += 1
     value = "".join(components)
-    return Attribute(name=name, condition=f"{operator} {value}")
+    last_token = t.tokens[-1]
+    if is_comment(last_token):
+        return Attribute(name=name, condition=f"{operator} {value}", comment=last_token.value)
+    else:
+        return Attribute(name=name, condition=f"{operator} {value}")
 
 
 def get_attribute_conditions(t):
@@ -267,6 +282,7 @@ def get_attribute_conditions(t):
 
     attributes = []
     if isinstance(t, sql.Parenthesis) or isinstance(t, sql.Where):
+        last_token = t.tokens[-1]
         i = 0
         token = t.token_first(skip_ws=True, skip_cm=False)
         while token != None:
@@ -279,19 +295,28 @@ def get_attribute_conditions(t):
                 operator = token.normalized
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 components = []
+                comment = None
                 while token != None:
                     if token.ttype == sql.T.Keyword:
                         components.append(token.normalized)
                     elif token.ttype in sql.T.Literal:
                         components.append(token.value)
+                    elif is_comment(token):
+                        comment = token.value
                     else:
                         break
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 value = " ".join(components)
-                attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
-
-            # TODO: comment na konci?
-
+                attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+            elif is_comment(token):
+                if token == last_token:
+                    # Zde jsme narazili na komentar k JOIN tabulce ("JOIN ... ON ( ... ) komentar") -- byva uvedeno uplne na konci t.tokens. Pridame fiktivni atribut (name == alias == condition == None, comment != None), ze ktereho pak bude komentar extrahovan a prirazen k tabulce
+                    attributes.append(Attribute(name=None, alias=None, condition=None, comment=token.value))
+                    return attributes
+                elif len(attributes) > 0:
+                    # Jde o komentar k poslednimu nalezenemu atributu
+                    attributes[-1].comment = token.value.strip()
+                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
             else:
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
     else:
@@ -310,14 +335,13 @@ def get_attribute_conditions(t):
                     components.append(token.normalized)
                 elif token.ttype in sql.T.Literal:
                     components.append(token.value)
+                elif is_comment(token):
+                    comment = token.value
                 else:
                     break
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
             value = " ".join(components)
-            attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
-
-        # TODO: comment na konci?
-
+            attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
     return attributes
 
 
@@ -347,13 +371,11 @@ def process_with_element(t, comment_before=""):
             i += 1
         # Zpracovani zavorky se SELECT zatim preskocime -- nejprve vyrobime patricnou tabulku, jejich atributy budou potom doplneny
         last_token = t.tokens[-1]
-        if (isinstance(last_token, sql.Comment)
-                or last_token.ttype == sql.T.Comment.Single
-                or last_token.ttype == sql.T.Comment.Multiline):
-            comment_after = last_token.value
+        if is_comment(last_token):
+            comment_after = last_token.value.strip()
         else:
             comment_after = ""
-        table = Table(name=name, comment_before=comment_before, comment_after=comment_after, source_sql=t.value.strip())
+        table = Table(name=name, comment=comment_before, source_sql=t.value)
         if len(aliases) > 0:
             known_attribute_aliases = True
             # Zatim nastavime jmena na "TBD" s tim, ze tato budou aktualizovana v process_statement(...) nize
@@ -370,20 +392,18 @@ def process_with_element(t, comment_before=""):
 def process_token(t, is_within=None, comment_before=""):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
 
-    # TODO: SELECT ... FROM TABLE ALIAS komentar
-    # TODO: * JOIN TABLE ALIAS komentar
-    # TODO: vyzobavat a ukladat i komentare k atributum? (napr. "JOIN ... ON ... komentar")
+    # TODO: komentar SELECT ... FROM ...
 
     if is_within == "select":
         attributes = []
         if isinstance(t, sql.Identifier):
-            name, alias = get_name_and_alias(t)
-            attributes.append(Attribute(name=name, alias=alias))
+            name, alias, comment = get_name_alias_comment(t)
+            attributes.append(Attribute(name=name, alias=alias, comment=comment))
         elif isinstance(t, sql.IdentifierList):
             for token in t.tokens:
                 if isinstance(token, sql.Identifier):
-                    name, alias = get_name_and_alias(token)
-                    attributes.append(Attribute(name=name, alias=alias))
+                    name, alias, comment = get_name_alias_comment(token)
+                    attributes.append(Attribute(name=name, alias=alias, comment=comment))
         elif t.ttype == sql.T.Wildcard:
             attributes.append(Attribute(name="*"))
         return attributes
@@ -401,20 +421,23 @@ def process_token(t, is_within=None, comment_before=""):
                 i += 1
             if len(components) > 0:
                 table.add_alias("".join(components))
+            last_token = t.tokens[-1]
+            # Komentar pridame jen v pripade, ze zatim neni nastaveny
+            if (is_comment(last_token)
+                    and (table.comment == None or len(table.comment) == 0)):
+                table.comment = last_token.value.strip()
             Table.__tables__.append(table)
             process_statement(t.tokens[0], table)
             return table
         else:
-            return get_name_and_alias(t)
-    # if is_within == "join":
-    #     return get_name_and_alias(t)
+            return get_name_alias_comment(t)
     if is_within == "with":
         if isinstance(t, sql.Identifier):
             process_with_element(t, comment_before)
         elif isinstance(t, sql.IdentifierList):
             for token in t.tokens:
                 comment_before = process_with_element(token, comment_before)
-        return None
+        return comment_before
     if is_within == "on":
         return get_attribute_conditions(t)
     if isinstance(t, sql.IdentifierList):
@@ -452,15 +475,9 @@ def process_statement(s, table=None, known_attribute_aliases=False):
         token_counter += 1
         if token_counter == 2:
             comment_before = ""
-        # Nestaci testovat pouze isinstance(t, Comment)
-        if (isinstance(t, sql.Comment)
-                or t.ttype == sql.T.Comment.Single
-                or t.ttype == sql.T.Comment.Multiline):
-            comment_before = t.value
+        if is_comment(t):
+            comment_before = t.value.strip()
             token_counter = 0
-
-            # TODO: DORESIT
-
         elif t.ttype == sql.T.Keyword:
             if t.normalized == "FROM":
                 is_within = "from"
@@ -484,7 +501,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
             is_within = "select"
             # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
             if table == None:
-                table = Table(name_template="select")
+                table = Table(name_template="select", comment=comment_before)
                 Table.__tables__.append(table)
             sql_components = []
         elif isinstance(t, sql.Where):
@@ -494,6 +511,13 @@ def process_statement(s, table=None, known_attribute_aliases=False):
             if obj != None:
                 if isinstance(obj, list) and isinstance(obj[0], Attribute):
                     if is_within == "on":
+                        last_attribute = obj[-1]
+                        if (last_attribute.name == None
+                                and last_attribute.alias == None
+                                and last_attribute.condition == None
+                                and last_attribute.comment != None):
+                            join_table.comment = last_attribute.comment
+                            obj.pop()
                         join_table.update_attributes(obj)
 
                         # TODO: mozna updatovat attribs v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
@@ -507,6 +531,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         for i in range(len(table.attributes)):
                             table.attributes[i].name = obj[i].name
                             table.attributes[i].condition = obj[i].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
+                            table.attributes[i].comment = obj[i].comment
                         # pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
                         for i in range(len(table.attributes), len(obj)):
                             table.attributes.append(obj[i])
@@ -516,10 +541,13 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                     # Najdeme zdrojovou tabulku, odkud se berou data, a pridame k ni alias
                     src_table = Table.get_table_by_name(obj[0])
                     if src_table == None:
-                        src_table = Table(name=obj[0], alias=obj[1])
+                        src_table = Table(name=obj[0], alias=obj[1], comment=obj[2])
                         Table.__tables__.append(src_table)
                     else:
                         src_table.add_alias(obj[1])
+                        # Komentar pridame jen v pripade, ze zatim neni nastaveny
+                        if src_table.comment == None or len(src_table.comment) == 0:
+                            src_table.comment = obj[2]
                     # Pokud aktualne resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
                     if is_within == "join":
                         join_table = Table(name_template="join")
@@ -536,11 +564,11 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(obj.id)
-                    # elif is_within == "with" and len(last_comment) > 0:
-                    #     obj.comment_before = last_comment
-                    #     last_comment = ""
                     else:
                         table.link_to_table_id(obj.id)
+                elif is_within == "with" and isinstance(obj, str):
+                    comment_before = obj
+                    token_counter = 0
             is_within = None
         sql_components.append(t.value)
         (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)

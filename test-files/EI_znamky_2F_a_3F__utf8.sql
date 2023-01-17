@@ -15,13 +15,13 @@ with
         from (select * from st01.predmet where predmet.status = 9                       -- *** Predmet
                                         and predmet.fakulta_id = 4
                                         and predmet.zkratka in ('2F', '3F') 
-                                    ) pr
+                                    ) pr                                                -- KOMENTAR (SELECT ...) pr
              inner join st01.aktualni_predmet ap                                        -- *** Aktualni predmet
                    on ( ap.predmet_id = pr.predmet_id
                         and ap.status = 9
                         and ap.rok between 2012 and 2015                 -- rok !!! 
                         -- and ap.typ_semestru_id = 1      -- 2-ZS, 1-LS
-                       )
+                       )                                                                -- KOMENTAR INNER JOIN ... ON ( ... )
 
     ) -- as pap_tmp     --------------------------- Predmet 2F a 3F za 3 roky
     
@@ -41,7 +41,7 @@ with
             inner join st01.el_index ei1                                                 -- *** El_index 
                   on ( ei1.aktualni_predmet_id = p1.aktualni_predmet_id
                        and p1.pr = '2F' 
-                       and ei1.status = 9 )
+                       and ei1.status = 9 )                                             -- KOMENTAR INNER JOIN ... ON ( ... )
             inner join st01.pap_tmp p2                                                  -- *** Predmet - aktualni_predmet 2F 
                   on ( p2.pr = '3F'
                        and p2.rok = p1.rok          -- 2F i 3F ve stejnem roce
@@ -54,7 +54,7 @@ with
     
 --select tmp.* from eia_tmp tmp
 --/*
-
+-- mozna == komentar k SELECT ...?
 select eia.rok
        , count(1) studentu_1_2
        , sum(eia.lepsi_nez_f_1) as lepsi_nez_f_1
