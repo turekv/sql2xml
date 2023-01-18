@@ -30,8 +30,12 @@ with
         select o1.*
         from pr_o o1                                                                    -- *** Pr_o
         union all
-        select o2.pr, o3.*
+        ( select o2.pr, o3.*
         from pr_o o2                                                                    -- *** Pr_o
+
+            WHERE pr_o.status = 9     -- PRIDANO PRO POTREBY TESTOVANI
+        )
+
             inner join logger.aktualni_predmet o3                                       -- *** Aktualni_predmet - logger
                   on o3.aktualni_predmet_id = o2.aktualni_predmet_id
         
