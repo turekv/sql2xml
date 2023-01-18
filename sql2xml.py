@@ -391,10 +391,7 @@ def process_with_element(t, comment_before=""):
 
 def process_token(t, is_within=None, comment_before=""):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
-
-    # TODO: komentar SELECT ... FROM ...
-
-    if is_within == "select":
+    if "select" in is_within:
         attributes = []
         if isinstance(t, sql.Identifier):
             name, alias, comment = get_name_alias_comment(t)
@@ -442,6 +439,7 @@ def process_token(t, is_within=None, comment_before=""):
         return get_attribute_conditions(t)
     if isinstance(t, sql.IdentifierList):
 
+        # TODO: kdy dojde na tuto cast kodu? (drive mozna bylo potreba, nyni se zda byt zbytecne)
         # TODO: ma vubec smysl tady resit predavani komentare?
 
         for i in range(len(t.tokens)):
@@ -471,6 +469,8 @@ def process_statement(s, table=None, known_attribute_aliases=False):
     #   * JOIN: nutno skladat po castech (oddelene tokeny)
     #   * SELECT: u "( SELECT ... )" sice lze pouzit t.parent.value, ale toto u top-level SELECT (bez uvedeni v zavorkach) ulozi vzdy kompletne cely (!) SQL dotaz, coz neni zadouci. I zde tedy jsou zdrojove kody skladany po castech.
     sql_components = []
+    union_components = []
+    union_table = None
     while t != None:
         token_counter += 1
         if token_counter == 2:
@@ -484,28 +484,42 @@ def process_statement(s, table=None, known_attribute_aliases=False):
             elif "JOIN" in t.normalized:
                 is_within = "join"
                 sql_components = []
+                if union_table != None:
+                    union_table.source_sql = "\n".join(union_components).strip()
+                    union_table = None
             elif t.normalized == "ON":
                 is_within = "on"
-            elif t.normalized == "GROUP BY" or t.normalized == "ORDER BY":
-                # Pri nalezeni klicovych slov GROUP BY, ORDER BY preskocime nasledujici token
+            elif "UNION" in t.normalized:
+                is_within = "union-select"
+            else:
+            # elif t.normalized == "GROUP BY" or t.normalized == "ORDER BY":
+                # Pri nalezeni klicovych slov preskocime nasledujici token
 
-                # TODO: LIMIT? OFFSET? DESC? jina klicova slova?
-
-                # TODO: klicova slova mohou mit vicero parametru --> nestaci vzdy preskocit pouze jeden nasl. token!!! TEDY: jaky typ tokenu je nutno najit, nez lze pokracovat v analyze dotazu?
+                # TODO: klicova slova dost mozna mohou mit vicero parametru --> nemusi vzdy stacit preskocit pouze jeden nasl. token!
 
                 sql_components.append(t.value)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             is_within = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
-            is_within = "select"
-            # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
-            if table == None:
-                table = Table(name_template="select", comment=comment_before)
-                Table.__tables__.append(table)
-            sql_components = []
+            if is_within == "union-select":
+                # Pokud SELECT nasleduje po UNION [ALL], musime pro toto vytvorit tabulku (spojované SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl). K tomuto pripadu tedy je nutne pristupovat podobně jako k JOIN.
+                union_table = Table(name_template="union-select", comment=comment_before)
+                Table.__tables__.append(union_table)
+                union_components = []
+            else:
+                is_within = "select"
+                # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
+                if table == None:
+                    table = Table(name_template="select", comment=comment_before)
+                    Table.__tables__.append(table)
+                sql_components = []
         elif isinstance(t, sql.Where):
-            table.update_attributes(get_attribute_conditions(t))
+            attributes = get_attribute_conditions(t)
+            if union_table != None:
+                union_table.update_attributes(attributes)
+            else:
+                table.update_attributes(attributes)
         elif not t.ttype == sql.T.Punctuation:
             obj = process_token(t, is_within, comment_before)
             if obj != None:
@@ -524,6 +538,8 @@ def process_statement(s, table=None, known_attribute_aliases=False):
 
                         sql_components.append(t.value)
                         join_table.source_sql = "\n".join(sql_components).strip()
+                    elif is_within == "union-select":
+                        union_table.attributes.extend(obj)
                     elif known_attribute_aliases:
                         if len(obj) < len(table.attributes):
                             raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
@@ -548,13 +564,18 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         # Komentar pridame jen v pripade, ze zatim neni nastaveny
                         if src_table.comment == None or len(src_table.comment) == 0:
                             src_table.comment = obj[2]
-                    # Pokud aktualne resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
                     if is_within == "join":
+                        # Pokud aktualne resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
                         join_table = Table(name_template="join")
                         Table.__tables__.append(join_table)
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(src_table.id)
+                    elif union_table != None:
+                        # pokud resime UNION, je nutne vytvorit "mezitabulku" podobně jako v pripade JOIN
+                        # Zavislosti: table --> union_table --> src_table
+                        table.link_to_table_id(union_table.id)
+                        union_table.link_to_table_id(src_table.id)
                     else:
                         table.link_to_table_id(src_table.id)
                 elif isinstance(obj, Table):
@@ -571,6 +592,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                     token_counter = 0
             is_within = None
         sql_components.append(t.value)
+        union_components.append(t.value)
         (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
     # Obsah sql_components se resetuje pri nalezeni SELECT, resp. JOIN. Pokud je SELECT v zavorkach ("SELECT ... FROM ( SELECT ... )"), obsahuje kolekce na konci jednu uzaviraci zavorku navic, kterou je potreba odebrat.
     if len(sql_components) > 0 and sql_components[0].lower() == "select":
@@ -588,10 +610,10 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
-        # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
+        source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         encoding = "utf-8"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
