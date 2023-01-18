@@ -230,7 +230,9 @@ def get_name_alias_comment(t):
     # kde "name" muze byt Identifier, prip. Function
     i = 0
     components = []
-    while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+    while (i < len(t.tokens)
+            and not t.tokens[i].is_whitespace
+            and not is_comment(t.tokens[i])):
         components.append(t.tokens[i].value)
         i += 1
     name = "".join(components)
@@ -239,7 +241,9 @@ def get_name_alias_comment(t):
         i += 1
     alias = None
     components = []
-    while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+    while (i < len(t.tokens)
+            and not t.tokens[i].is_whitespace
+            and not is_comment(t.tokens[i])):
         components.append(t.tokens[i].value)
         i += 1
     if len(components) > 0:
@@ -392,18 +396,24 @@ def process_with_element(t, comment_before=""):
 def process_token(t, is_within=None, comment_before=""):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
     if "select" in is_within:
-        attributes = []
-        if isinstance(t, sql.Identifier):
-            name, alias, comment = get_name_alias_comment(t)
-            attributes.append(Attribute(name=name, alias=alias, comment=comment))
-        elif isinstance(t, sql.IdentifierList):
-            for token in t.tokens:
-                if isinstance(token, sql.Identifier):
-                    name, alias, comment = get_name_alias_comment(token)
-                    attributes.append(Attribute(name=name, alias=alias, comment=comment))
-        elif t.ttype == sql.T.Wildcard:
-            attributes.append(Attribute(name="*"))
-        return attributes
+        if isinstance(t, sql.Parenthesis):
+            table = Table(name_template=is_within, comment=comment_before)
+            Table.__tables__.append(table)
+            process_statement(t, table)
+            return table
+        else:
+            attributes = []
+            if isinstance(t, sql.Identifier):
+                name, alias, comment = get_name_alias_comment(t)
+                attributes.append(Attribute(name=name, alias=alias, comment=comment))
+            elif isinstance(t, sql.IdentifierList):
+                for token in t.tokens:
+                    if isinstance(token, sql.Identifier):
+                        name, alias, comment = get_name_alias_comment(token)
+                        attributes.append(Attribute(name=name, alias=alias, comment=comment))
+            elif t.ttype == sql.T.Wildcard:
+                attributes.append(Attribute(name="*"))
+            return attributes
     if is_within == "from" or is_within == "join":
         if isinstance(t.tokens[0], sql.Parenthesis):
             # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias ]
@@ -469,6 +479,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
     #   * JOIN: nutno skladat po castech (oddelene tokeny)
     #   * SELECT: u "( SELECT ... )" sice lze pouzit t.parent.value, ale toto u top-level SELECT (bez uvedeni v zavorkach) ulozi vzdy kompletne cely (!) SQL dotaz, coz neni zadouci. I zde tedy jsou zdrojove kody skladany po castech.
     sql_components = []
+    # union_* jsou potreba v pripade, ze sjednocovani je provadeno bez prikazu "SELECT ..." bez zavorek (tzn. "SELECT ... UNION SELECT ..."), jelikoz pak je patricny SQL kod vracen jako prosta sekvence tokenu). Pokud je nektery SELECT v zavorkach, zpracovava se jako samostatny statement.
     union_components = []
     union_table = None
     while t != None:
@@ -585,6 +596,8 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(obj.id)
+                    # elif is_within == "union-select":
+                    #     table.link_to_table_id(obj.id)
                     else:
                         table.link_to_table_id(obj.id)
                 elif is_within == "with" and isinstance(obj, str):
