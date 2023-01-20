@@ -5,7 +5,7 @@
 --    (
 ------ Cast vyse musi byt nad WITH.
 with
-    --------------------------- Pridelene AD profese, rn=1 nejstarsi zaznam s disable_auto_remove
+/*    --------------------------- Pridelene AD profese, rn=1 nejstarsi zaznam s disable_auto_remove
     prof_tmp as (select pp.*
             , row_number() over ( partition by pp.id_profession, pp.id_person 
                                   order by pp.disable_auto_remove desc, pp.ins_ts asc, pp.orgunitid) as rn    -- KOMENTAR rn
@@ -35,7 +35,8 @@ with
 --/*
 
     --------------------------- Nove hodnoty
-    , prof_new as (select
+    ,
+    */ prof_new as (select
             pt.* 
 --            pt.id_pers_prof, pt.id_person, pt.orgunitid
 --            , pt.disable_auto_remove, pt.status, pt.rn

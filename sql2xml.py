@@ -312,6 +312,9 @@ def get_attribute_conditions(t):
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 value = " ".join(components)
                 attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+            elif isinstance(token, sql.Parenthesis):
+                attributes.extend(get_attribute_conditions(token))
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
             elif is_comment(token):
                 if token == last_token:
                     # Zde jsme narazili na komentar k JOIN tabulce ("JOIN ... ON ( ... ) komentar") -- byva uvedeno uplne na konci t.tokens. Pridame fiktivni atribut (name == alias == condition == None, comment != None), ze ktereho pak bude komentar extrahovan a prirazen k tabulce
@@ -346,6 +349,8 @@ def get_attribute_conditions(t):
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
             value = " ".join(components)
             attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+        elif isinstance(token, sql.Parenthesis):
+            attributes = get_attribute_conditions(token)
     return attributes
 
 
@@ -395,7 +400,7 @@ def process_with_element(t, comment_before=""):
 
 def process_token(t, is_within=None, comment_before=""):
     # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
-    if "select" in is_within:
+    if is_within != None and "select" in is_within:
         if isinstance(t, sql.Parenthesis):
             table = Table(name_template=is_within, comment=comment_before)
             Table.__tables__.append(table)
@@ -408,7 +413,7 @@ def process_token(t, is_within=None, comment_before=""):
                 attributes.append(Attribute(name=name, alias=alias, comment=comment))
             elif isinstance(t, sql.IdentifierList):
                 for token in t.tokens:
-                    if isinstance(token, sql.Identifier):
+                    if isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
                         name, alias, comment = get_name_alias_comment(token)
                         attributes.append(Attribute(name=name, alias=alias, comment=comment))
             elif t.ttype == sql.T.Wildcard:
@@ -447,25 +452,36 @@ def process_token(t, is_within=None, comment_before=""):
         return comment_before
     if is_within == "on":
         return get_attribute_conditions(t)
-    if isinstance(t, sql.IdentifierList):
+    # if isinstance(t, sql.Identifier):
 
-        # TODO: kdy dojde na tuto cast kodu? (drive mozna bylo potreba, nyni se zda byt zbytecne)
-        # TODO: ma vubec smysl tady resit predavani komentare?
+    #     # TODO: muze tento pripad vubec nastat? (drive mozna bylo potreba, nyni se zda byt zbytecne)
 
-        for i in range(len(t.tokens)):
-            if i == 0:
-                process_token(t.tokens[i], is_within, comment_before)
-            else:
+    #     process_token(t.tokens[i], is_within, comment_before)
+    #     return None
+    #     # return get_name_alias_comment(t)
+    
+    # if isinstance(t, sql.IdentifierList):
 
-                # TODO: zde bude asi nutne aktualizovat comment_before podle toho, co je v t.tokens?
+    #     # TODO: muze tento pripad vubec nastat? (drive mozna bylo potreba, nyni se zda byt zbytecne)
+    #     # TODO: ma vubec smysl tady resit predavani komentare?
 
-                process_token(t.tokens[i], is_within)
-        # for token in t:
-        #     process_token(token, is_within)
-        return None
+    #     for i in range(len(t.tokens)):
+    #         if i == 0:
+    #             process_token(t.tokens[i], is_within, comment_before)
+    #         else:
+
+    #             # TODO: zde bude asi nutne aktualizovat comment_before podle toho, co je v t.tokens?
+
+    #             process_token(t.tokens[i], is_within)
+    #     # for token in t:
+    #     #     process_token(token, is_within)
+    #     return None
 
 
 def process_statement(s, table=None, known_attribute_aliases=False):
+
+    # TODO: doresit referencovani stejnych tabulek pomoci formalne ruznych jmen (napr. pap_tmp vs. st01.pap_tmp)
+
     # CTE ... Common Table Expression (WITH, ...)
     # DDL ... Data Definition Language (...)
     # DML ... Data Manipulation Language (SELECT, ...)
@@ -502,19 +518,48 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                 is_within = "on"
             elif "UNION" in t.normalized:
                 is_within = "union-select"
+            
+            # POCKAT NA VYRESENI BUG REPORTU ( https://github.com/andialbrecht/sqlparse/issues/701 )
+            # elif t.normalized == "OVER":
+            #     # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci (de facto nazvem atributu). Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
+            #     # Samotny obsah zavorky za OVER nas pritom v zasade nezajima, jelikoz urcuje razeni zaznamu a zde zminene atributy se ve vracenem datasetu vubec nemusi vyskytovat.
+            #     sql_components.append(t.value)
+            #     (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+
+            #     # TODO: ma smysl zde resit token_counter a comment_before ?
+
+            #     # token_counter += 1       # Je potreba? Neslo by proste na konci tohoto bloku
+            #     # if token_counter == 2:   # nastavit comment_before = "" ?
+            #     #     comment_before = ""  #
+
+            #     # Struktura t.tokens:
+            #     #   * pokud t je typu Identifier (tzn. "problemovy atribut" je poslednim v seznamu): Parenthesis [ whitespace(s) [ AS whitespace(s) Identifier ] ] [ whitespace(s) Comment ]
+            #     #   * pokud t je typu IdentifierList (tzn. za "problemovym atributem" je uveden jeste alespon jeden dalsi): Identifier [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier ...
+
+            #     # TODO: nebo toto cele resit standardne nize? Jak ale potom predat info o tom, ze se jedna o veci k OVER? (ZDE NEMUZEME PREPSAT/ZMENIT is_within!)
+
+            #     # TODO: POZOR: pokud po sobe nasleduje vice "problematickych atributu" s OVER, je t typu IdentifierList s prvkem Function, ktery analogicky zahrnuje veskery po nem nasledujici kod --> mozna bude potreba tokens = t.flatten() a pak postupne iterovat skrz tokens?
+
+            #     if isinstance(t, sql.Identifier):
+            #         obj = process_token(t, "over")
+
+            #         # TODO: zpracovat vraceny objekt -- zde nanejvys alias + komentar k poslednimu nalezenemu atributu
+
+            #     elif isinstance(t, sql.IdentifierList):
+            #         for token in t.tokens:
+            #             obj = process_token(token, "over")  # TODO: pouzit "over" i zde, kdyz se dale mohou vyskytovat standardni tokeny (Identifier) predstavujici atributy?
+
+            #             # TODO: zpracovat vraceny objekt
+            
             else:
-            # elif t.normalized == "GROUP BY" or t.normalized == "ORDER BY":
-                # Pri nalezeni klicovych slov preskocime nasledujici token
-
-                # TODO: klicova slova dost mozna mohou mit vicero parametru --> nemusi vzdy stacit preskocit pouze jeden nasl. token!
-
+                # Pri nalezeni klicovych slov preskocime nasledujici token (aktualne se zda, ze u syntakticky spravneho SQL dotazu je i skupina parametru klicoveho slova vracena jako jeden token (IdentifierList, Parenthesis, ...))
                 sql_components.append(t.value)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             is_within = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
             if is_within == "union-select":
-                # Pokud SELECT nasleduje po UNION [ALL], musime pro toto vytvorit tabulku (spojované SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl). K tomuto pripadu tedy je nutne pristupovat podobně jako k JOIN.
+                # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), musime pro toto uz zde vytvorit tabulku. Je tedy nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
                 union_table = Table(name_template="union-select", comment=comment_before)
                 Table.__tables__.append(union_table)
                 union_components = []
@@ -526,12 +571,41 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                     Table.__tables__.append(table)
                 sql_components = []
         elif isinstance(t, sql.Where):
-            attributes = get_attribute_conditions(t)
-            if union_table != None:
-                union_table.update_attributes(attributes)
+            # Struktura t.tokens: Where whitespace(s) [ Parenthesis | Comparison | Identifier | Exists ] [ ... ]
+            # Nejprve musime zjistit, jestli jde o obycejne WHERE, nebo o WHERE EXISTS. Toto lze provest nejjednoduseji tak, ze najdeme druhy token v poradi (pri preskakovani mezer/... a komentaru) a zkontrolujeme, zda jde o EXISTS.
+            # t.token_first(skip_ws=True, skip_cm=True)  # neni potreba
+            (j, token) = t.token_next(0, skip_ws=True, skip_cm=True)
+            if token.ttype == sql.T.Keyword and token.normalized == "EXISTS":
+                # Nyni cteme dalsi tokeny, ale uz nepreskakujeme komentare (protoze pokud by tam nejaky byl, slo by o komentar k tabulce "WHERE EXISTS ( SELECT ... )").
+                (j, token) = t.token_next(j, skip_ws=True, skip_cm=False)
+                # Pokud by komentar byl pred WHERE, slo by o komentar k tabulce ve FROM. Ma-li jit o komentar k tabulce WHERE EXISTS ( SELECT ... ), mel by tento byt bud za EXISTS, nebo pred SELECT v zavorce. Je proto potreba zde resetovat comment_before.
+                comment_before = ""
+                while token != None:
+                    if is_comment(token):
+                        comment_before = token.value.strip()
+                        token_counter = 0
+                    elif isinstance(token, sql.Parenthesis):
+                        exists_table = Table(name_template="where-exists-select", comment=comment_before)
+                        Table.__tables__.append(exists_table)
+                        table.link_to_table_id(exists_table.id)
+                        process_statement(token, exists_table)
+                        # Odsud nelze vyskocit pomoci break, nebot v t.tokens muze za zavorkou jeste byt uveden komentar, ktery ale patri k nasledujicimu tokenu...
+                    (j, token) = t.token_next(j, skip_ws=True, skip_cm=False)
             else:
-                table.update_attributes(attributes)
+                attributes = get_attribute_conditions(t)
+                if union_table != None:
+                    union_table.update_attributes(attributes)
+                else:
+                    table.update_attributes(attributes)
         elif not t.ttype == sql.T.Punctuation:
+
+            # TODO: POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> odeslan bug report ( https://github.com/andialbrecht/sqlparse/issues/700 )
+            # MOZNA BUDE NUTNE OSETRIT NEJAK RUCNE?
+            # if t.value.lower().endswith("within"):
+            #     # ZDE NELZE (t je casto IdentifierList apod.) -- nutno az v process_token
+            #     partial_attr_name = t.value
+            #     (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+
             obj = process_token(t, is_within, comment_before)
             if obj != None:
                 if isinstance(obj, list) and isinstance(obj[0], Attribute):
@@ -545,7 +619,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                             obj.pop()
                         join_table.update_attributes(obj)
 
-                        # TODO: mozna updatovat attribs v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
+                        # TODO: mozna updatovat attributy v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
 
                         sql_components.append(t.value)
                         join_table.source_sql = "\n".join(sql_components).strip()
@@ -555,13 +629,13 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         if len(obj) < len(table.attributes):
                             raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
                         # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT
-                        for i in range(len(table.attributes)):
-                            table.attributes[i].name = obj[i].name
-                            table.attributes[i].condition = obj[i].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
-                            table.attributes[i].comment = obj[i].comment
+                        for j in range(len(table.attributes)):
+                            table.attributes[j].name = obj[j].name
+                            table.attributes[j].condition = obj[j].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
+                            table.attributes[j].comment = obj[j].comment
                         # pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
-                        for i in range(len(table.attributes), len(obj)):
-                            table.attributes.append(obj[i])
+                        for j in range(len(table.attributes), len(obj)):
+                            table.attributes.append(obj[j])
                     else:
                         table.attributes.extend(obj)
                 elif isinstance(obj, tuple) and isinstance(obj[0], str):
@@ -626,13 +700,14 @@ if __name__ == "__main__":
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
-        source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
+        # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        encoding = "utf-8"
+        # encoding = "utf-8"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
+        source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
-        # encoding = "utf-8-sig"
+        encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
@@ -651,6 +726,34 @@ if __name__ == "__main__":
         print(formatted_sql)
         # f = open(source_sql[:-4] + "__vystup.txt", "w")
         # f.write(formatted_sql + "\n")
+
+        # # Kod k bug reportu ( https://github.com/andialbrecht/sqlparse/issues/700 )
+        # statement = parse("SELECT LISTAGG(attr,', ') WITHIN GROUP(ORDER BY attr) as column FROM table")
+        # print(statement[0].tokens)
+        # for t in statement[0].tokens:
+        #     try:
+        #         print(t.tokens)
+        #     except:
+        #         pass
+
+        # Kod k bug reportu ( https://github.com/andialbrecht/sqlparse/issues/701 )
+        # # s = parse("SELECT column_a AS ca, LISTAGG(column_b, ', ') AS cb, col_c FROM table")
+        # query = ("SELECT uid "
+        #            ", ROW_NUMBER() OVER ( PARTITION BY table.col_a ORDER BY table.col_b DESC ) as row "
+        #            ", full_name AS name "
+        #            ", another_column AS acol "
+        #            ", ROW_NUMBER() OVER ( PARTITION BY table.col_c ORDER BY table.col_d ASC ) as row_lo "
+        #            ", ROW_NUMBER() OVER ( PARTITION BY table.col_e ORDER BY table.col_f DESC ) as row_hi "
+        #            ", last_column AS lc "
+        #            "FROM table")
+        # statement = parse(query)
+        # print(statement[0].tokens)
+        # for t in statement[0].tokens:
+        #     print(t.value)
+        #     try:
+        #         print(t.tokens)
+        #     except:
+        #         pass
 
         statements = parse(query, encoding=encoding)
         for s in statements:
