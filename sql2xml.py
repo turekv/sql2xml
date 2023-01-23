@@ -396,7 +396,6 @@ def process_with_element(t, comment_before=""):
 
 
 def process_token(t, is_within=None, comment_before=""):
-    # print(f"TOKEN (ttype: {t.ttype}, class: {type(t).__name__}, is_keyword: {t.is_keyword}, is_group: {t.is_group}):\n  {t}\n")
     if is_within != None and "select" in is_within:
         if isinstance(t, sql.Parenthesis):
             table = Table(name_template=is_within, comment=comment_before)
@@ -442,7 +441,7 @@ def process_token(t, is_within=None, comment_before=""):
             return get_name_alias_comment(t)
     if is_within == "with":
         if isinstance(t, sql.Identifier):
-            process_with_element(t, comment_before)
+            comment_before = process_with_element(t, comment_before)
         elif isinstance(t, sql.IdentifierList):
             for token in t.tokens:
                 comment_before = process_with_element(token, comment_before)
@@ -630,7 +629,7 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                             table.attributes[j].name = obj[j].name
                             table.attributes[j].condition = obj[j].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
                             table.attributes[j].comment = obj[j].comment
-                        # pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
+                        # Pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
                         for j in range(len(table.attributes), len(obj)):
                             table.attributes.append(obj[j])
                     else:
@@ -647,14 +646,14 @@ def process_statement(s, table=None, known_attribute_aliases=False):
                         if src_table.comment == None or len(src_table.comment) == 0:
                             src_table.comment = obj[2]
                     if is_within == "join":
-                        # Pokud aktualne resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
+                        # Pokud resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
                         join_table = Table(name_template="join")
                         Table.__tables__.append(join_table)
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(src_table.id)
                     elif union_table != None:
-                        # pokud resime UNION, je nutne vytvorit "mezitabulku" podobně jako v pripade JOIN
+                        # Pokud resime UNION, je nutne vytvorit "mezitabulku" podobně jako v pripade JOIN
                         # Zavislosti: table --> union_table --> src_table
                         table.link_to_table_id(union_table.id)
                         union_table.link_to_table_id(src_table.id)
@@ -762,7 +761,7 @@ if __name__ == "__main__":
             # f.write(output + "\n")
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
-        os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
     finally:
         if f != None:
             f.close()
+    os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
