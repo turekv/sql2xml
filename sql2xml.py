@@ -9,9 +9,6 @@ class Attribute:
     def __init__(self, name, alias=None, condition=None, comment=None):
         self.name = name
         self.alias = alias
-        # self.aliases = []
-        # if alias != None:
-        #     self.aliases.append(alias)
         self.condition = condition
         if comment != None:
             comment = comment.strip()
