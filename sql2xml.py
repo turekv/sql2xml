@@ -1,11 +1,13 @@
 import sqlparse.sql as sql
 from sqlparse import format, parse
+from typing import Any
 import sys
 import os
 import traceback
 
 
 class Attribute:
+    """Trida reprezentujici atribut (vc. pripadneho aliasu a pozadovane hodnoty)"""
     def __init__(self, name, alias=None, condition=None, comment=None):
         self.name = name
         self.alias = alias
@@ -17,7 +19,9 @@ class Attribute:
 
 class Table:
     """Trida reprezentujici tabulku (kazda tabulka ma unikatni ID a jmeno)"""
+    # Nejnizsi volne ID
     __next_id__ = 0
+    # Mnozina sablon pro automatickou tvorbu nazvu tabulek (klic == sablona, hodnota == aktualni poradove cislo k pouziti pri tvorbe nazvu)
     __next_template_num__ = {}
     # Kolekce existujicich tabulek
     __tables__ = []
@@ -400,20 +404,23 @@ def get_attribute_conditions(t: sql.Token) -> list:
 
 
 def process_with_element(t, comment_before="") -> str:
-    """"""
-    # Struktura t.tokens: Identifier [ [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier [ ... ] ]
-    comment_after = comment_before  # pokud jsme narazili napr. na Punctuation, musime si komentar ponechat pro referenci
+    """Kompletne zpracuje kod bloku ve WITH (vc. vytvoreni odpovidajici tabulky) a vrati komentar, ktery byl na konci t.tokens (protoze ten se dost mozna vztahuje ke kodu, ktery nasleduje po aktualne zpracovavanem bloku)."""
+    # Struktura tokenu nasledujicich po klicovem slove WITH: Identifier [ [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier [ ... ] ]
+    # --> Zde zpracovavame pouze tokeny typu Identifier. Pokud narazime napr. na bily znak nebo Punctuation, jednoduse vratime comment_before tak, jak jsme ho dostali.
+    comment_after = comment_before
     if isinstance(t, sql.Identifier):
-        # Struktura obj.tokens: name whitespace(s) [AS whitespace(s) ] parenthesis-SELECT [ whitespace(s) [ comment ] ]
-        # Pokud je uveden jen nazev tabulky, je prvni token typu Name. Jsou-li za nazvem tabulky v zavorkach uvedeny aliasy sloupcu, je prvni token typu Function.
+        # Struktura t.tokens: name whitespace(s) [ column_aliases whitespace(s) ] [ AS whitespace(s) ] ( SELECT ... ) [ whitespace(s) comment ]
+        # Pokud je uveden jen nazev tabulky, je prvni token typu Name. Jsou-li za nazvem tabulky v zavorkach uvedeny aliasy atributu, je prvni token typu Function.
         aliases = []
         if t.tokens[0].ttype == sql.T.Name:
             name = t.tokens[0].value
         else:
             name = t.tokens[0].tokens[0].value
+            # Po nacteni jmena preskocime vse az do zavorky (Parenthesis), ve ktere jsou aliasy atributu
             i = 1
             while i < len(t.tokens[0].tokens) and not isinstance(t.tokens[0].tokens[i], sql.Parenthesis):
                 i += 1
+            # Je-li v zavorce jeden alias, pak nas zajima pouze sub-token typu Identifier. Pokud je v zavorce vice aliasu, jsou vraceny jako jeden sub-token typu IdentifierList, ktery musime dale projit a nacist z nej vsechny Identifiery.
             for par_token in t.tokens[0].tokens[i].tokens:
                 if isinstance(par_token, sql.Identifier):
                     aliases.append(par_token.value)
@@ -421,10 +428,11 @@ def process_with_element(t, comment_before="") -> str:
                     for alias_token in par_token.tokens:
                         if isinstance(alias_token, sql.Identifier):
                             aliases.append(alias_token.value)
+        # V tuto chvili mame zjisteny nazev docasne tabulky i pripadne aliasy atributu. Od druheho tokenu v t.tokens tedy hledame tak dlouho, nez najdeme zavorku (ve ktere se nachazi "SELECT ...").
         i = 1
         while i < len(t.tokens) and not isinstance(t.tokens[i], sql.Parenthesis):
             i += 1
-        # Zpracovani zavorky se SELECT zatim preskocime -- nejprve vyrobime patricnou tabulku, jejich atributy budou potom doplneny
+        # Zpracovani zavorky se SELECT vsak zatim preskocime -- nejprve si ulozime pripadny komentar z konce t-tokens a vyrobime tabulku reprezentujici zpracovavany blok, jejiz atributy budou doplneny/aktualizovany pozdeji (az se k nim dostaneme pri prochazeni SQL kodu)
         last_token = t.tokens[-1]
         if is_comment(last_token):
             comment_after = last_token.value.strip()
@@ -432,70 +440,85 @@ def process_with_element(t, comment_before="") -> str:
             comment_after = ""
         table = Table(name=name, comment=comment_before, source_sql=t.value)
         if len(aliases) > 0:
+            # Zname uz aliasy atributu (byly v zavorce za nazvem tabulky), ale nic vic k atributum tabulky nevime. Pouze tedy nastavime parametr, na zaklade ktereho pak v hlavni casti kodu (process_statement(...)) budou k atributum doplneny zbyle udaje. Jmena atributu budou pro poradek (at nejsou None) docasne "TBD".
             known_attribute_aliases = True
-            # Zatim nastavime jmena na "TBD" s tim, ze tato budou aktualizovana v process_statement(...) nize
             for a in aliases:
                 table.attributes.append(Attribute(name="TBD", alias=a))
         else:
             known_attribute_aliases = False
         Table.__tables__.append(table)
-        # Nyni doresime zavorku, odkaz na jiz vytvorenou tabulku predame
+        # Nakonec doresime zavorku, odkaz na jiz vytvorenou tabulku predame stejne jako parametr ohledne (ne)znalosti aliasu atributu
         process_statement(t.tokens[i], table, known_attribute_aliases)
     return comment_after
 
 
-def process_token(t, is_within=None, comment_before=""):
+def process_token(t, is_within=None, comment_before="") -> Any:
+    """Zpracuje zadany token; typ vraceneho objektu zavisi na tom, jakeho typu token je a v jakem kontextu se nachazi (napr. SELECT <token> ... vrati odkaz na vytvorenou tabulku apod.)"""
     if is_within != None and "select" in is_within:
+        # Token je v kontextu SELECT, prip. UNION SELECT. Pokud je token typu Parenthesis, je potreba vytvorit odpovidajici (mezi-)tabulku a zavorku pak zpracovat jako samostatny SQL statement. Do process_statement(...) pritom musime predat odkaz na novou tabulku, aby bylo mozne spravne priradit nalezene atributy atd.
         if isinstance(t, sql.Parenthesis):
             table = Table(name_template=is_within, comment=comment_before)
             Table.__tables__.append(table)
             process_statement(t, table)
             return table
-        else:
-            attributes = []
-            if isinstance(t, sql.Identifier):
-                name, alias, comment = get_name_alias_comment(t)
-                attributes.append(Attribute(name=name, alias=alias, comment=comment))
-            elif isinstance(t, sql.IdentifierList):
-                for token in t.tokens:
-                    if isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
-                        name, alias, comment = get_name_alias_comment(token)
-                        attributes.append(Attribute(name=name, alias=alias, comment=comment))
-            elif t.ttype == sql.T.Wildcard:
-                attributes.append(Attribute(name="*"))
-            return attributes
+        # Je-li token typu Identifier, IdentifierList, Function, prip. Wildcard, jde o obycejny atribut ci seznam atributu. Metoda pak podle toho vrati seznam s jednim ci vicero atributy.
+        attributes = []
+        if isinstance(t, sql.Identifier) or isinstance(t, sql.Function):
+            # Jmeno a pripadny alias zjistime pomoci get_name_alias_comment(...)
+            name, alias, comment = get_name_alias_comment(t)
+            attributes.append(Attribute(name=name, alias=alias, comment=comment))
+        elif isinstance(t, sql.IdentifierList):
+            # Zde postupujeme analogicky pripadu vyse, jen s tim rozdilem, ze musime projit vsechny tokeny v t.tokens
+            for token in t.tokens:
+                if isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
+                    name, alias, comment = get_name_alias_comment(token)
+                    attributes.append(Attribute(name=name, alias=alias, comment=comment))
+        elif t.ttype == sql.T.Wildcard:
+            # Typicky "SELECT * FROM ..."
+            attributes.append(Attribute(name="*"))
+        return attributes
     if is_within == "from" or is_within == "join":
+        # Token je v kontextu FROM ("SELECT ... FROM <token>"), prip. JOIN (napr. "SELECT ... FROM ... INNER JOIN <token>"). V obou pripadech muze byt token jak typu Parenthesis ("SELECT ... FROM ( SELECT ... )", "... JOIN ( SELECT ... )"), tak muze jit o prosty nazev zdrojove tabulky + pripadny alias a komentar.
         if isinstance(t.tokens[0], sql.Parenthesis):
-            # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias ]
+            # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias [ whitespace(s) komentar ] ]
+            # V zavorce je vzdy SELECT, takze je potreba vytvorit odpovidajici (mezi-)tabulku (sablona == "select")
             table = Table(name_template="select")
+            # Prvni sub-token (t.tokens[0]) i vsechno ostatni az po pripadny alias ci komentar zatim preskocime.
             i = 1
             while (i < len(t.tokens) and (t.tokens[i].is_whitespace
             or (t.tokens[i].ttype == sql.T.Keyword and t.tokens[i].normalized == "AS"))):
                 i += 1
+            # Ted do kolekce components ulozime vse, co je soucasti aliasu
             components = []
-            while i < len(t.tokens) and not t.tokens[i].is_whitespace:
+            while i < len(t.tokens) and not t.tokens[i].is_whitespace and not is_comment(t.tokens[i]):
                 components.append(t.tokens[i].value)
                 i += 1
             if len(components) > 0:
+                # Alias byl v kodu uveden, takze ho pridame k vytvorene tabulce
                 table.add_alias("".join(components))
+            # Dale zkontrolujeme posledni token, zda je komentarem. Pokud je a u tabulky zaroven neni nastaveny zadny komentar z drivejska (prvni komentar byva obvykle podrobnejsi nez pripadny dalsi k teze tabulce), tento komentar ulozime.
             last_token = t.tokens[-1]
-            # Komentar pridame jen v pripade, ze zatim neni nastaveny
             if (is_comment(last_token)
                     and (table.comment == None or len(table.comment) == 0)):
                 table.comment = last_token.value.strip()
             Table.__tables__.append(table)
+            # Uplne nakonec pak zpracujeme prvni subtoken (t.tokens[0]) jako samostatny statement a odkaz na vytvorenou tabulku predame parametrem
             process_statement(t.tokens[0], table)
             return table
-        else:
-            return get_name_alias_comment(t)
+        # V pripade, ze token neni typu Parethesis, jde o prosty nazev zdrojove tabulky + pripadny alias a komentar. Tyto ziskame jednoduse zavolanim get_name_alias_comment(...).
+        return get_name_alias_comment(t)
     if is_within == "with":
+        # Token je v kontextu WITH -- Identifier ("WITH <token: name AS ( SELECT ... )>"), IdentifierList ("WITH <token: name_1 AS ( SELECT ... ), name_2 AS ( SELECT ... ), ...>")
         if isinstance(t, sql.Identifier):
-            comment_before = process_with_element(t, comment_before)
-        elif isinstance(t, sql.IdentifierList):
+            # WITH obsahuje pouze jeden blok (docasnou tabulku) --> zpracujeme metodou process_with_element(...); zaroven musime vratit pripadny komentar, ktery je poslednim tokenem v t.tokens, byt se dost mozna vztahuje az k nasledujicimu tokenu
+            return process_with_element(t, comment_before)
+        if isinstance(t, sql.IdentifierList):
+            # Jednotlive tokeny v zpracujeme analogicky pripadu vyse. Pritom je nutne postupne predavat nalezene komentare a nakonec vratit posledni vystup metody process_with_element(...).
             for token in t.tokens:
                 comment_before = process_with_element(token, comment_before)
-        return comment_before
+            return comment_before
     if is_within == "on":
+        # token je v kontextu ON ("SELECT ... JOIN ... ON <token>"). Zde tedy jde o atributy vc. hodnot, ktere u nich pozadujeme
         return get_attribute_conditions(t)
     # if isinstance(t, sql.Identifier):
 
@@ -523,7 +546,8 @@ def process_token(t, is_within=None, comment_before=""):
     #     return None
 
 
-def process_statement(s, table=None, known_attribute_aliases=False):
+def process_statement(s, table=None, known_attribute_aliases=False) -> None:
+    """"""
 
     # TODO: doresit referencovani stejnych tabulek pomoci formalne ruznych jmen (napr. pap_tmp vs. st01.pap_tmp)
 
