@@ -704,8 +704,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         # encoding = "utf-8"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
-        # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
-        source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
+        source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
+        # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
@@ -727,7 +727,7 @@ if __name__ == "__main__":
         # f = open(source_sql[:-4] + "__vystup.txt", "w")
         # f.write(formatted_sql + "\n")
 
-        # # Kod k bug reportu ( https://github.com/andialbrecht/sqlparse/issues/700 )
+        # # KOD K BUG REPORTU ( https://github.com/andialbrecht/sqlparse/issues/700 )
         # statement = parse("SELECT LISTAGG(attr,', ') WITHIN GROUP(ORDER BY attr) as column FROM table")
         # print(statement[0].tokens)
         # for t in statement[0].tokens:
@@ -736,7 +736,7 @@ if __name__ == "__main__":
         #     except:
         #         pass
 
-        # Kod k bug reportu ( https://github.com/andialbrecht/sqlparse/issues/701 )
+        # KOD K BUG REPORTU ( https://github.com/andialbrecht/sqlparse/issues/701 )
         # # s = parse("SELECT column_a AS ca, LISTAGG(column_b, ', ') AS cb, col_c FROM table")
         # query = ("SELECT uid "
         #            ", ROW_NUMBER() OVER ( PARTITION BY table.col_a ORDER BY table.col_b DESC ) as row "

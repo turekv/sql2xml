@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# SQL dotazy + DIA
+*.sql
+*.dia
+
 # Distribution / packaging
 .Python
 build/
