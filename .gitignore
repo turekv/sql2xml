@@ -8,6 +8,7 @@ __pycache__/
 
 # Testovací soubory
 test-files/
+dia-custom-shapes/
 
 # Distribution / packaging
 .Python
