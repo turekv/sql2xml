@@ -25,7 +25,7 @@ class Table:
     __next_template_num__ = {}
     # Vychozi schema uvazovane pri ukladani celych jmen tabulek, ktere existuji v DB (tzn. nikoliv mezi-tabulek reprezentujicich napr. SELECT)
     __default_schema__ = "st01"
-    # Kolekce existujicich tabulek
+    # Kolekce nalezenych tabulek
     __tables__ = []
 
     def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment=None, source_sql=None):
@@ -809,27 +809,28 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
 
 
 if __name__ == "__main__":
-    # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani
-    if len(sys.argv) > 1:
-        source_sql = str(sys.argv[0])
-        encoding = str(sys.argv[1])
+    # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
+    if len(sys.argv) > 2:
+        source_sql = str(sys.argv[1])
+        encoding = str(sys.argv[2])
     else:
         # # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
         # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8 apod.)\n")
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        encoding = "utf-8"
+        # encoding = "utf-8"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
-        # encoding = "utf-8-sig"
+        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
+        encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
