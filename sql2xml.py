@@ -23,14 +23,20 @@ class Table:
     __next_id__ = 0
     # Mnozina sablon pro automatickou tvorbu nazvu tabulek (klic == sablona, hodnota == aktualni poradove cislo k pouziti pri tvorbe nazvu)
     __next_template_num__ = {}
+    # Vychozi schema uvazovane pri ukladani celych jmen tabulek, ktere existuji v DB (tzn. nikoliv mezi-tabulek reprezentujicich napr. SELECT)
+    __default_schema__ = "st01"
     # Kolekce existujicich tabulek
     __tables__ = []
 
     def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment=None, source_sql=None):
         self.id = Table.__generate_id__()
         if name != None:
+            # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
+            if not "." in name:
+                name = f"{Table.__default_schema__}.{name}"
             self.name = name
         else:
+            # Jmeno nebylo zadane, tzn. pracujeme s mezi-tabulkou, jejiz jmeno ulozime bez nazvu schematu
             self.name = Table.__generate_name__(name_template)
         self.aliases = []
         if alias != None:
@@ -130,12 +136,29 @@ class Table:
         return False
 
     @classmethod
+    def __get_canonical_name__(cls, name: str) -> str:
+        """Vrati cele jmeno tabulky vc. pripadneho nazvu schematu. POZOR: metoda predpoklada, ze zadane jmeno je "pricetne" (= neni None/...)!"""
+        if not "." in name:
+            is_aux_name = False
+            aux_names = Table.__next_template_num__.keys()
+            for aname in aux_names:
+                if name.startswith(f"{aname}-"):
+                    is_aux_name = True
+                    break
+            # Zadane jmeno neobsahuje nazev schematu (protoze v nazvu neni tecka) a zaroven neodpovida zadnemu pouzitemu typu mezi-tabulky --> do nazvu doplnime schema
+            if not is_aux_name:
+                name = f"{Table.__default_schema__}.{name}"
+        return name
+
+    @classmethod
     def get_table_by_name(cls, name: str) -> "Table":
         """Vrati odkaz na tabulku zadaneho jmena, prip. None, pokud v kolekci Table.__tables__ zadna takova tabulka neexistuje. Porovnavani jmen je case-sensitive!"""
         if name == None:
             return None
+        # Jmeno tabulky musime porovnavat vc. pripadneho nazvu schematu (aliasy naopak porovnavame primo s tim, co mame zadano)
+        cname = Table.__get_canonical_name__(name)
         for table in Table.__tables__:
-            if (name == table.name or name in table.aliases):
+            if (cname == table.name or name in table.aliases):
                 return table
         return None
 
@@ -158,7 +181,7 @@ class Table:
 
     @classmethod
     def __generate_name__(cls, template: str) -> str:
-        """Vytvori jmeno tabulky podle zadane sablony (template). Pokud sablona neni zadana nebo jde pouze o sekvenci mezer, je jako sablona pouzit retezec "table"."""
+        """Vytvori jmeno tabulky podle zadane sablony (template). Pokud sablona neni zadana nebo jde pouze o sekvenci mezer, je jako sablona pouzit retezec "table". Jelikoz jsou generovana pouze jmena mezi-tabulek reprezentujicich SELECT apod., neobsahuji vracene retezce nazev schematu."""
         if template == None:
             template = "table"
         else:
@@ -177,6 +200,7 @@ class Table:
 
     def add_alias(self, alias: str) -> bool:
         """Zkusi k tabulce pridat zadany alias. Pokud se toto podari, vrati True, jinak (napr. pokud uz zadany alias je mezi znamymi aliasy) vrati False. Porovnavani aliasu je case-sensitive + metoda NEKONTROLUJE pritomnost zadaneho aliasu u zbylych tabulek!"""
+        # Zadany alias staci zkontrolovat bez prihlednuti k pripadnemu nazvu schematu
         if alias == None or self.name == alias or alias in self.aliases:
             return False
         self.aliases.append(alias)
@@ -816,7 +840,7 @@ if __name__ == "__main__":
         with open(source_sql, mode="r", encoding=encoding) as file:
             query = "".join(file.readlines())
 
-        # VYPSANI PUVODNIHO DOTAZU V PREFORMATOVANEM STAVU
+        # VYPSANI PUVODNIHO DOTAZU V PREFORMATOVANEM STAVU -- POZOR: FORMATOVANI SLOZITEJSICH SQL DOTAZU MNOHDY TRVA DELSI DOBU!
         # S komentari neni idealni (nektera zalomeni radku jsou orezana apod.)
         # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (s komentáři):\n-----------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=False)}\n")
         # Bez komentaru
