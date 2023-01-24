@@ -547,39 +547,48 @@ def process_token(t, is_within=None, comment_before="") -> Any:
 
 
 def process_statement(s, table=None, known_attribute_aliases=False) -> None:
-    """"""
+    """Zpracuje cely SQL statement vc. vytvoreni patricnych tabulek"""
 
     # TODO: doresit referencovani stejnych tabulek pomoci formalne ruznych jmen (napr. pap_tmp vs. st01.pap_tmp)
 
     # CTE ... Common Table Expression (WITH, ...)
     # DDL ... Data Definition Language (...)
     # DML ... Data Manipulation Language (SELECT, ...)
+
+    # Tokeny budeme prochazet iteratorem a rovnou budeme preskakovat bile znaky (komentare vsak ne)
     i = 0
     t = s.token_first(skip_ws=True, skip_cm=False)
+    # Flag pro predavani informaci o kontextu toho ktereho tokenu (v ruznych kontextech je zpravidla potreba mirne odlisny zpusob zpracovani)
     is_within = None
     comment_before = ""
-    token_counter = 10  # Lib. hodnota takova, aby se v cyklu na zacatku NEresetoval comment_before, pokud by SQL dotaz nezacinal komentarem
+    # Pocitadlo radku od posledniho komentare (nekdy nas zajima komentar pred aktualnim tokenem). Pocatecni hodnota je libovolna takova, aby se v cyklu na zacatku NEresetoval comment_before, pokud by SQL dotaz nezacinal komentarem.
+    token_counter = 10
     # Zdrojovy kod:
     #   * WITH: lze primo pomoci t.value
     #   * JOIN: nutno skladat po castech (oddelene tokeny)
     #   * SELECT: u "( SELECT ... )" sice lze pouzit t.parent.value, ale toto u top-level SELECT (bez uvedeni v zavorkach) ulozi vzdy kompletne cely (!) SQL dotaz, coz neni zadouci. I zde tedy jsou zdrojove kody skladany po castech.
     sql_components = []
-    # union_* jsou potreba v pripade, ze sjednocovani je provadeno bez prikazu "SELECT ..." bez zavorek (tzn. "SELECT ... UNION SELECT ..."), jelikoz pak je patricny SQL kod vracen jako prosta sekvence tokenu). Pokud je nektery SELECT v zavorkach, zpracovava se jako samostatny statement.
+    # union_* jsou potreba v pripade, ze sjednocovani je provadeno bez prikazu "SELECT ..." v zavorce (tzn. "SELECT ... UNION SELECT ..."), jelikoz pak je patricny SQL kod vracen jako prosta sekvence tokenu). Pokud je nektery SELECT v zavorkach, zpracovava se jako samostatny statement.
     union_components = []
     union_table = None
     while t != None:
+        # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
             comment_before = ""
         if is_comment(t):
+            # Pri nalezeni komentare si tento ulozime a resetujeme token_counter
             comment_before = t.value.strip()
             token_counter = 0
         elif t.ttype == sql.T.Keyword:
+            # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni is_within na patricny kontext
             if t.normalized == "FROM":
                 is_within = "from"
             elif "JOIN" in t.normalized:
                 is_within = "join"
+                # Zde musime krome nastaveni kontextu navic resetovat sql_components...
                 sql_components = []
+                # ... a pokud jsme doted resili UNION SELECT (tzn. pokud union_table != None), je take nutne k union_table pridat zdrojovy SQL kod a resetovat referenci na tabulku (UNION je totiz timto doreseny)
                 if union_table != None:
                     union_table.source_sql = "\n".join(union_components).strip()
                     union_table = None
@@ -621,14 +630,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             #             # TODO: zpracovat vraceny objekt
             
             else:
-                # Pri nalezeni klicovych slov preskocime nasledujici token (aktualne se zda, ze u syntakticky spravneho SQL dotazu je i skupina parametru klicoveho slova vracena jako jeden token (IdentifierList, Parenthesis, ...))
+                # Pri nalezeni "obecneho" klicoveho slova, ktere standardne ma parametr(y), preskocime nasledujici token -- napr. i zpusob razeni v "ORDER BY name ASC" je totiz vracen jako "<token: Keyword> <token: Name Order>". Jako jeden token (IdentifierList, Parenthesis, ...) je pritom vracena i skupina parametru klicoveho slova.
                 sql_components.append(t.value)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             is_within = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
             if is_within == "union-select":
-                # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), musime pro toto uz zde vytvorit tabulku. Je tedy nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
+                # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), budou odpovidajici tokeny vraceny sqlparse postupne a tudiz musime uz zde vytvorit patricnou mezi-tabulku. Jinak receno, k situaci je nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
                 union_table = Table(name_template="union-select", comment=comment_before)
                 Table.__tables__.append(union_table)
                 union_components = []
@@ -641,8 +650,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 sql_components = []
         elif isinstance(t, sql.Where):
             # Struktura t.tokens: Where whitespace(s) [ Parenthesis | Comparison | Identifier | Exists ] [ ... ]
-            # Nejprve musime zjistit, jestli jde o obycejne WHERE, nebo o WHERE EXISTS. Toto lze provest nejjednoduseji tak, ze najdeme druhy token v poradi (pri preskakovani mezer/... a komentaru) a zkontrolujeme, zda jde o EXISTS.
-            # t.token_first(skip_ws=True, skip_cm=True)  # neni potreba
+            # Nejprve musime zjistit, jestli jde o obycejne WHERE, nebo o WHERE EXISTS. Toto lze provest nejjednoduseji tak, ze najdeme druhy token v poradi (pri preskakovani bilych znaku a komentaru) a zkontrolujeme, zda jde o EXISTS.
+            # t.token_first(skip_ws=True, skip_cm=True)  # Neni potreba
             (j, token) = t.token_next(0, skip_ws=True, skip_cm=True)
             if token.ttype == sql.T.Keyword and token.normalized == "EXISTS":
                 # Nyni cteme dalsi tokeny, ale uz nepreskakujeme komentare (protoze pokud by tam nejaky byl, slo by o komentar k tabulce "WHERE EXISTS ( SELECT ... )").
@@ -651,16 +660,20 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 comment_before = ""
                 while token != None:
                     if is_comment(token):
+                        # Pripadny komentar si ulozime a resetujeme token_counter. Jinak ale hodnotu token_counter nemenime, jelikoz nyni se nachazime "o uroven niz" (tzn. prochazime sub-tokeny hlavniho tokenu t).
                         comment_before = token.value.strip()
                         token_counter = 0
                     elif isinstance(token, sql.Parenthesis):
+                        # Jestlize jsme narazili na zavorku, jdeo situaci "SELECT ... FROM ... WHERE EXISTS ( SELECT ... )". K tomu tedy je nutne vytvorit patricnou mezi-tabulku reprezentujici "( SELECT ... )".
                         exists_table = Table(name_template="where-exists-select", comment=comment_before)
                         Table.__tables__.append(exists_table)
                         table.link_to_table_id(exists_table.id)
+                        # Zavorku nyni zpracujeme jako standardni statement s tim, ze parametrem predame referenci na vytvorenou mezi-tabulku
                         process_statement(token, exists_table)
-                        # Odsud nelze vyskocit pomoci break, nebot v t.tokens muze za zavorkou jeste byt uveden komentar, ktery ale patri k nasledujicimu tokenu...
+                        # Odsud nelze vyskocit pomoci break, nebot v t.tokens muze za zavorkou jeste byt uveden komentar, ktery ale patri k nasledujicimu tokenu a musime si ho tudiz ulozit do comment_before...
                     (j, token) = t.token_next(j, skip_ws=True, skip_cm=False)
             else:
+                # Jde o obycejny SELECT (bez EXISTS), takze jen nacteme atributy a aktualizujeme je u aktualni tabulky -- union-table, pokud resime UNION (a kdy union_table != None), resp. table (zde nemuze byt None, protoze bud mame objekt zadany parametrem v process_statement(...), nebo jsme v drivejsim tokenu nasli SELECT a tabulku potazmo zaroven i vytvorili).
                 attributes = get_attribute_conditions(t)
                 if union_table != None:
                     union_table.update_attributes(attributes)
@@ -675,10 +688,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             #     partial_attr_name = t.value
             #     (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
 
+            # Jakykoliv jiny token (tedy pokud nejde o Punctuation) zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before)
             obj = process_token(t, is_within, comment_before)
+            # Navratova hodnota process_token(...) muze byt ruznych typu v zavislosti na kontextu apod. Na zaklade toho se nyni rozhodneme, jakym konkretnim zpusobem je potreba s ni nalozit.
             if obj != None:
                 if isinstance(obj, list) and isinstance(obj[0], Attribute):
+                    # Ziskali jsme seznam atributu
                     if is_within == "on":
+                        # Pokud jsme pri nacitani atributu v "JOIN ... ON ..."" nasli jako posledni sub-token komentar, jde o komentar k mezi-tabulce reprezentujici JOIN. Do seznamu atributu byl v takovem pripade jako posledni pridat fiktivni atribut s nesmyslnymi parametry (name == alias == condition == None, comment != None), ze ktereho nyni komentar ziskame zpet a priradime ho k dane tabulce.
                         last_attribute = obj[-1]
                         if (last_attribute.name == None
                                 and last_attribute.alias == None
@@ -686,71 +703,81 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 and last_attribute.comment != None):
                             join_table.comment = last_attribute.comment
                             obj.pop()
+                        # Vraceny objekt (nyni uz bez pripadneho fiktivniho atributu s komentarem) muzeme pouzit k aktualizaci atributu i mezitabulky reprezentujici JOIN
                         join_table.update_attributes(obj)
 
                         # TODO: mozna updatovat attributy v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
-
+                        
+                        # Hodnotu tokenu si pridame to kolekce s komponentami zdrojoveho SQL kodu
                         sql_components.append(t.value)
+                        # Jelikoz nyni mame cely JOIN zpracovany, lze k mezi-tabulce priradit i ji odpovidajici SQL kod
                         join_table.source_sql = "\n".join(sql_components).strip()
                     elif is_within == "union-select":
+                        # Resime-li UNION SELECT, staci pridat nalezene autributy k mezi-tabulce reprezentujici danou cast kodu
                         union_table.attributes.extend(obj)
                     elif known_attribute_aliases:
+                        # Zde resime blok ve WITH, u ktereho byly za nazvem docasne tabulky uvedeny aliasy (alespon nekterych) atributu. Nejprve tedy zkontrolujeme, zda pocet atributu v kompletnim seznamu >= poctu aliasu uvedenych drive v zavorce za jmenem tabulky. pokud tomu tak neni, je s SQL kodem neco spatne.
                         if len(obj) < len(table.attributes):
                             raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
-                        # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT
+                        # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT. Atributy u tabulky proto na zaklade jejich poradi aktualizujeme podle objektu vraceneho vyse metodou process_token(...).
                         for j in range(len(table.attributes)):
                             table.attributes[j].name = obj[j].name
                             table.attributes[j].condition = obj[j].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
                             table.attributes[j].comment = obj[j].comment
-                        # Pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
+                        # nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
                         for j in range(len(table.attributes), len(obj)):
                             table.attributes.append(obj[j])
                     else:
+                        # Ve zbylych situacich staci pridat nalezene atributy k aktualni tabulce (ktera uz u korektniho SQL kodu nyni nemuze byt None)
                         table.attributes.extend(obj)
                 elif isinstance(obj, tuple) and isinstance(obj[0], str):
-                    # Najdeme zdrojovou tabulku, odkud se berou data, a pridame k ni alias
+                    # Metoda process_token(...) vratila ntici, v niz je prvni prvek retezcem. Jinak receno, ziskali jsme nazev tabulky spolu s pripadnym aliasem a komentarem. Nejprve tedy zkusime najit zdrojovou tabulku, odkud se berou data, a pridame k ni alias.
                     src_table = Table.get_table_by_name(obj[0])
                     if src_table == None:
+                        # Zdrojova tabulka zatim neexistuje (typicky v situaci, kdy resime "SELECT ... FROM dosud_nezminena_tabulka") --> vytvorime ji
                         src_table = Table(name=obj[0], alias=obj[1], comment=obj[2])
                         Table.__tables__.append(src_table)
                     else:
+                        # O zdrojove tabulce uz vime, takze k ni jen pridame alias.
                         src_table.add_alias(obj[1])
-                        # Komentar pridame jen v pripade, ze zatim neni nastaveny
+                        # Komentar pridame jen v pripade, ze tento zatim neni nastaveny (prvotni komentar zpravidla byva detailnejsi a nedava smysl ho prepsat necim dost mozna kratsim/strucnejsim)
                         if src_table.comment == None or len(src_table.comment) == 0:
                             src_table.comment = obj[2]
                     if is_within == "join":
-                        # Pokud resime JOIN, vytvorime patricnou "mezitabulku", ke ktere budou nasledne nastaveny podminky dle ON
+                        # Pokud resime JOIN, vytvorime patricnou mezi-tabulku (zatim neexistuje!), ke ktere budou nasledne pridany atributy s podminkami dle ON
                         join_table = Table(name_template="join")
                         Table.__tables__.append(join_table)
-                        # Zavislosti: table --> join_table --> src_table
+                        # Navic je nutne nastavit zavislosti tabulek: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(src_table.id)
                     elif union_table != None:
-                        # Pokud resime UNION, je nutne vytvorit "mezitabulku" podobně jako v pripade JOIN
-                        # Zavislosti: table --> union_table --> src_table
+                        # Pokud resime UNION, mezi-tabulka uz existuje, takze pouze nastavime zavislosti (table --> union_table --> src_table)
                         table.link_to_table_id(union_table.id)
                         union_table.link_to_table_id(src_table.id)
                     else:
+                        # V "obecnem" pripade ("SELECT ... FROM src_table") proste jen k aktualni tabulce reprezentujici SELECT pridame zavislost na zdrojove tabulce
                         table.link_to_table_id(src_table.id)
                 elif isinstance(obj, Table):
+                    # Metoda process_token(...) vratila objekt typu Table. Toto muze nastat ve dvou pripadech: bud resime JOIN (k cemuz musime vytvorit mezi-tabulku a nastavit odpovidajici zavislosti), nebo jde o situaci "SELECT ... FROM ( SELECT ... )" (kde uz mezi-tabulka byla vytvorena -- jde o tu vracenou -- a pouze nastavime zavislost aktualni tabulky na mezi-tabulce).
                     if is_within == "join":
                         join_table = Table(name_template="join")
                         Table.__tables__.append(join_table)
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(obj.id)
-                    # elif is_within == "union-select":
-                    #     table.link_to_table_id(obj.id)
                     else:
                         table.link_to_table_id(obj.id)
-                elif is_within == "with" and isinstance(obj, str):
+                elif is_within == "with":  # and isinstance(obj, str):  # Neni potreba, metoda v kontextu WITH vraci vyhradne retezec (nanejvys prazdny)
+                    # Resime blok WITH, kde navratovou hodnotou je pripadny komentar (byva vracen vzdy jako posledni sub-token, i kdyz se muze tykat az nasledujiciho tokenu). Ten si tedy ulozime a resetujeme token_counter.
                     comment_before = obj
                     token_counter = 0
+            # Token mame zpracovany, takze muzeme resetovat kontext
             is_within = None
+        # Nakonec si ulozime kod otkenu do kolekci sql_components a union_components (je nutne aktualizovat obe!) a nacteme dalsi token
         sql_components.append(t.value)
         union_components.append(t.value)
         (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
-    # Obsah sql_components se resetuje pri nalezeni SELECT, resp. JOIN. Pokud je SELECT v zavorkach ("SELECT ... FROM ( SELECT ... )"), obsahuje kolekce na konci jednu uzaviraci zavorku navic, kterou je potreba odebrat.
+    # Obsah sql_components se resetuje pri nalezeni SELECT, resp. JOIN. Pokud je SELECT v zavorkach ("SELECT ... FROM ( SELECT ... )"), obsahuje kolekce na konci jednu uzaviraci zavorku navic, kterou je pred ulozenim SQL kodu nutne odstranit.
     if len(sql_components) > 0 and sql_components[0].lower() == "select":
         if sql_components[-1] == ")":
             sql_components.pop()
@@ -758,10 +785,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
 
 
 if __name__ == "__main__":
+    # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani
     if len(sys.argv) > 1:
         source_sql = str(sys.argv[0])
         encoding = str(sys.argv[1])
     else:
+        # # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
         # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8 apod.)\n")
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
@@ -793,6 +822,7 @@ if __name__ == "__main__":
         # Bez komentaru
         formatted_sql = f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n"
         print(formatted_sql)
+        # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
         # f = open(source_sql[:-4] + "__vystup.txt", "w")
         # f.write(formatted_sql + "\n")
 
@@ -831,6 +861,7 @@ if __name__ == "__main__":
         for table in Table.__tables__:
             output = f"{table}\n"
             print(output)
+            # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
             # f.write(output + "\n")
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
