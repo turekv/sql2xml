@@ -25,17 +25,17 @@ class Table:
     __next_id__ = 0
     # Mnozina sablon pro automatickou tvorbu nazvu tabulek (klic == sablona, hodnota == aktualni poradove cislo k pouziti pri tvorbe nazvu)
     __next_template_num__ = {}
-    # Vychozi schema uvazovane pri ukladani celych jmen tabulek, ktere existuji v DB (tzn. nikoliv mezi-tabulek reprezentujicich napr. SELECT)
-    __default_schema__ = "st01"
+    # # Vychozi schema uvazovane pri ukladani celych jmen tabulek, ktere existuji v DB (tzn. nikoliv mezi-tabulek reprezentujicich napr. SELECT)
+    # __default_schema__ = "st01"
     # Kolekce nalezenych tabulek
     __tables__ = []
 
     def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment=None, source_sql=None):
         self.id = Table.__generate_id__()
         if name != None:
-            # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
-            if not "." in name:
-                name = f"{Table.__default_schema__}.{name}"
+            # # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
+            # if not "." in name:
+            #     name = f"{Table.__default_schema__}.{name}"
             self.name = name
         else:
             # Jmeno nebylo zadane, tzn. pracujeme s mezi-tabulkou, jejiz jmeno ulozime bez nazvu schematu
@@ -138,30 +138,30 @@ class Table:
                 return table.add_alias(alias)
         return False
 
-    @classmethod
-    def __get_canonical_name__(cls, name: str) -> str:
-        """Vrati cele jmeno tabulky vc. pripadneho nazvu schematu. POZOR: metoda predpoklada, ze zadane jmeno je "pricetne" (= neni None/...)!"""
-        if not "." in name:
-            is_aux_name = False
-            aux_names = Table.__next_template_num__.keys()
-            for aname in aux_names:
-                if name.startswith(f"{aname}-"):
-                    is_aux_name = True
-                    break
-            # Zadane jmeno neobsahuje nazev schematu (protoze v nazvu neni tecka) a zaroven neodpovida zadnemu pouzitemu typu mezi-tabulky --> do nazvu doplnime schema
-            if not is_aux_name:
-                name = f"{Table.__default_schema__}.{name}"
-        return name
+    # @classmethod
+    # def __get_canonical_name__(cls, name: str) -> str:
+    #     """Vrati cele jmeno tabulky vc. pripadneho nazvu schematu. POZOR: metoda predpoklada, ze zadane jmeno je "pricetne" (= neni None/...)!"""
+    #     if not "." in name:
+    #         is_aux_name = False
+    #         aux_names = Table.__next_template_num__.keys()
+    #         for aname in aux_names:
+    #             if name.startswith(f"{aname}-"):
+    #                 is_aux_name = True
+    #                 break
+    #         # Zadane jmeno neobsahuje nazev schematu (protoze v nazvu neni tecka) a zaroven neodpovida zadnemu pouzitemu typu mezi-tabulky --> do nazvu doplnime schema
+    #         if not is_aux_name:
+    #             name = f"{Table.__default_schema__}.{name}"
+    #     return name
 
     @classmethod
     def get_table_by_name(cls, name: str) -> "Table":
         """Vrati odkaz na tabulku zadaneho jmena, prip. None, pokud v kolekci Table.__tables__ zadna takova tabulka neexistuje. Porovnavani jmen je case-sensitive!"""
         if name == None:
             return None
-        # Jmeno tabulky musime porovnavat vc. pripadneho nazvu schematu (aliasy naopak porovnavame primo s tim, co mame zadano)
-        cname = Table.__get_canonical_name__(name)
+        # # Jmeno tabulky musime porovnavat vc. pripadneho nazvu schematu (aliasy naopak porovnavame primo s tim, co mame zadano)
+        # cname = Table.__get_canonical_name__(name)
         for table in Table.__tables__:
-            if (cname == table.name or name in table.aliases):
+            if (name == table.name or name in table.aliases):
                 return table
         return None
 
@@ -481,7 +481,7 @@ def process_with_element(t, comment_before="") -> str:
 
 
 def process_identifier_or_function(t) -> list:
-    """Zpracuje token typu Identifier nebo Function a vrati odpovidajici atribut. Je-li pro popsani atributu potreba mezi-tabulka (napr. pokud je misto obycejneho atributu "( SELECT ... )" nebo "( CASE ... )"), vrati krome odpovidajiciho atributu i fiktivni atribut s udajem pro svazani nadrazene tabulky s nove vytvorenou mezi-tbaulkou (name == alias == condition == None, comment == ID mezi-tabulky)."""
+    """Zpracuje token typu Identifier nebo Function a vrati odpovidajici atribut. Je-li pro popsani atributu potreba mezi-tabulka (napr. pokud je misto obycejneho atributu "( SELECT ... )" nebo "( CASE ... )"), vrati krome odpovidajiciho atributu i fiktivni atribut s udajem pro svazani nadrazene tabulky s nove vytvorenou mezi-tabulkou (name == alias == condition == None, comment == ID mezi-tabulky)."""
     attributes = []
     # Jmeno a pripadny alias zjistime pomoci get_name_alias_comment(...)
     name, alias, comment = get_name_alias_comment(t)  # TODO: Literal mozna do uvozovek?
@@ -921,9 +921,9 @@ if __name__ == "__main__":
         # VYPSANI PUVODNIHO DOTAZU V PREFORMATOVANEM STAVU -- POZOR: FORMATOVANI SLOZITEJSICH SQL DOTAZU MNOHDY TRVA DELSI DOBU!
         # S komentari neni idealni (nektera zalomeni radku jsou orezana apod.)
         # print(f"\nPŘEFORMÁTOVANÝ DOTAZ (s komentáři):\n-----------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=False)}\n")
-        # Bez komentaru
-        formatted_sql = f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n"
-        print(formatted_sql)
+        # # Bez komentaru
+        # formatted_sql = f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n"
+        # print(formatted_sql)
         # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
         # f = open(source_sql[:-4] + "__vystup.txt", "w")
         # f.write(formatted_sql + "\n")
@@ -961,6 +961,9 @@ if __name__ == "__main__":
             process_statement(s)
 
         for table in Table.__tables__:
+            # Potlacime vypis tabulek, ktere nejsou docasne (= existuji v DB a jsou tedy referencovany stylem schema.tabulka)
+            if "." in table.name:
+                continue
             output = f"{table}\n"
             print(output)
             # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
