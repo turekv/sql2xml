@@ -25,7 +25,7 @@ class Table:
     __next_id__ = 0
     # Mnozina sablon pro automatickou tvorbu nazvu tabulek (klic == sablona, hodnota == aktualni poradove cislo k pouziti pri tvorbe nazvu)
     __next_template_num__ = {}
-    # # Vychozi schema uvazovane pri ukladani celych jmen tabulek, ktere existuji v DB (tzn. nikoliv mezi-tabulek reprezentujicich napr. SELECT)
+    # # Vychozi schema uvazovane pri ukladani celych jmen tabulek
     # __default_schema__ = "st01"
     # Kolekce nalezenych tabulek
     __tables__ = []
@@ -82,7 +82,7 @@ class Table:
                     attr_comment = f"\n{indent}{indent}{indent}Komentář: \"{Table.__trim_to_length__(attr.comment)}\""
                 else:
                     attr_comment = ""
-                attribute_collection.append(f"{attr.name}{condition}{alias}{attr_comment}")
+                attribute_collection.append(f"{Table.__trim_to_length__(attr.name)}{condition}{alias}{attr_comment}")
             # # Kolekci atributu nebudeme tridit podle abecedy (jednak chceme zachovat poradi atributu a jednak by to zpusobilo problemy v situaci, kdy je vytvarena pomocna tabulka s v kodu natvrdo zadanymi hodnotami)
             # attribute_collection.sort()
             attributes = f"\n{indent}{indent}".join(attribute_collection)
@@ -105,11 +105,11 @@ class Table:
     
     @classmethod
     def __trim_to_length__(cls, text: str) -> str:
-        """Zkrati zadany text na max_snippet_length == 50 znaku, prip. vrati puvodni text, pokud byl kratsi. Veskera zalomeni radku jsou zaroven nahrazena mezerami."""
-        # Potreba v situaci, kdy napr. sql_source == None
+        """Zkrati zadany text na max_snippet_length == 50 znaku, prip. vrati puvodni text, pokud byl kratsi. Veskera zalomeni radku, vicenasobne bile znaky apod. jsou zaroven nahrazeny jednotlivymi mezerami."""
+        # Potreba v situaci, kdy napr. komentar k tabulce/atributu je None
         if text == None:
             return ""
-        text = text.replace("\n", " ")
+        text = " ".join(text.split())
         max_snippet_length = 50
         if len(text) < max_snippet_length:
             return text
@@ -493,21 +493,18 @@ def process_identifier_or_function(t) -> list:
     # Resime kompletni token (byt treba nestandarni -- v zavorce), nebo jde o zbytek tokenu s WITHIN GROUP?
     if (isinstance(t.tokens[0], sql.Parenthesis)
             and not leading_portion.startswith("order")):
-        # Namisto bezneho atributu pracujeme se zavorkou, ve ktere typicky byva dalsi SELECT, prip. CASE. S ohledem na moznou delku SELECTu vezmeme jako nazev atributu pouze nazev odpovidajici mezi-tabulky, nastavime pripadny alias (pokud je za zavorkou uveden), obsah zavorky zpracujeme jako separatni statement (podobne jako napr. JOIN). Nakonec nastavime zavislosti tabulek. U CASE postupujeme podobne, pouze s tim rozdilem, ze namisto plnohodnotneho zpracovani vsech zavislosti u mezi-tabulky (process_statement(...)) k ni pouze nastavime alias a komentar a do SQL kodu ulozime "( CASE ... )".
+        # Namisto bezneho atributu pracujeme se zavorkou, ve ktere typicky byva dalsi SELECT, prip. CASE. S ohledem na moznou delku SELECTu vezmeme jako nazev atributu pouze nazev odpovidajici mezi-tabulky, nastavime pripadny alias (pokud je za zavorkou uveden), obsah zavorky zpracujeme jako separatni statement (podobne jako napr. JOIN). Nakonec nastavime zavislosti tabulek. U CASE namisto vytvoreni mezi-tabulky atd. jednoduse pouzijeme cely kod jako nazev atributu (podobne jako v pripade funkce) a nastavime pripadny alias a komentar, coz uz vsechno mame z get_name_alias_comment(...) volaneho vyse.
         # Nejprve tedy musime zjistit, co konkretne vlastne nyni je v aktualnim tokenu. Toto udelame naprosto "tupe" prostym porovnanim zacatku leading_portion se "select" (melo by snad stacit).
         if leading_portion.startswith("select"):
             # Vytvorime mezi-tabulku, u ktere jako komentar nastavime ten vyse zjisteny, a aktualizujeme jmeno atributu podle jmena tabulky
             table = Table(name_template="select", comment=comment)
             # Sub-token se SELECT je hned jako prvni, neni potreba hledat ho iterovanim pres token.tokens
             process_statement(t.tokens[0], table)
-        else:
-            # Predpokladame, ze pokud v zavorce neni SELECT, je tam CASE --> sablona pro jmeno je "case" + pridame komentar a rovnou i SQL kod; process_statement(...) uz se nevola
-            table = Table(name_template="case", comment=comment, source_sql=t.tokens[0].value)
-        Table.__tables__.append(table)
-        name = f"<{table.name}>"
-        # Nakonec je nutne zaridit nastaveni zavislosti nadrazene tabulky. Na tu ale zde nemame k dispozici odkaz. ID nove mezi-tabulky tedy predame jako fiktivni atribut (name == alias == condition == None, comment == ID) a zavislost (prip. zavislosti, nebot jich muze byt vice) pak doresime v hlavnim kodu.
-        attributes.append(Attribute(name=None, alias=None, condition=None, comment=str(table.id)))
-    # Nakonec jeste do kolekce pridame samotny atribut, at uz je obycejny nebo nekompletni (toto se doresi v process_token(...))
+            Table.__tables__.append(table)
+            name = f"<{table.name}>"
+            # Nakonec je nutne zaridit nastaveni zavislosti nadrazene tabulky. Na tu ale zde nemame k dispozici odkaz. ID nove mezi-tabulky tedy predame jako fiktivni atribut (name == alias == condition == None, comment == ID) a zavislost (prip. zavislosti, nebot jich muze byt vice) pak doresime v hlavnim kodu.
+            attributes.append(Attribute(name=None, alias=None, condition=None, comment=str(table.id)))
+    # Nakonec do kolekce pridame samotny atribut, at uz je obycejny nebo nekompletni (toto se doresi v process_token(...))
     attributes.append(Attribute(name=name, alias=alias, comment=comment))
     return attributes
 
@@ -644,6 +641,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     union_table = None
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP (viz BUG zmineny v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     wg_attribute = None
+    # Nekompletni atribut vznikly v dusledku OVER (viz BUG zmineny v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
+    over_attribute = None
     while t != None:
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
@@ -669,39 +668,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 is_within = "on"
             elif "UNION" in t.normalized:
                 is_within = "union-select"
-            
-            # POCKAT NA VYRESENI BUG REPORTU ( https://github.com/andialbrecht/sqlparse/issues/701 )
-            # elif t.normalized == "OVER":
-            #     # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci (de facto nazvem atributu). Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
-            #     # Samotny obsah zavorky za OVER nas pritom v zasade nezajima, jelikoz urcuje razeni zaznamu a zde zminene atributy se ve vracenem datasetu vubec nemusi vyskytovat.
-            #     sql_components.append(t.value)
-            #     (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
-
-            #     # TODO: ma smysl zde resit token_counter a comment_before ?
-
-            #     # token_counter += 1       # Je potreba? Neslo by proste na konci tohoto bloku
-            #     # if token_counter == 2:   # nastavit comment_before = "" ?
-            #     #     comment_before = ""  #
-
-            #     # Struktura t.tokens:
-            #     #   * pokud t je typu Identifier (tzn. "problemovy atribut" je poslednim v seznamu): Parenthesis [ whitespace(s) [ AS whitespace(s) Identifier ] ] [ whitespace(s) Comment ]
-            #     #   * pokud t je typu IdentifierList (tzn. za "problemovym atributem" je uveden jeste alespon jeden dalsi): Identifier [ whitespace(s) ] Punctuation [ whitespace(s) ] Identifier ...
-
-            #     # TODO: nebo toto cele resit standardne nize? Jak ale potom predat info o tom, ze se jedna o veci k OVER? (ZDE NEMUZEME PREPSAT/ZMENIT is_within!)
-
-            #     # TODO: POZOR: pokud po sobe nasleduje vice "problematickych atributu" s OVER, je t typu IdentifierList s prvkem Function, ktery analogicky zahrnuje veskery po nem nasledujici kod --> mozna bude potreba tokens = t.flatten() a pak postupne iterovat skrz tokens?
-
-            #     if isinstance(t, sql.Identifier):
-            #         obj = process_token(t, "over")
-
-            #         # TODO: zpracovat vraceny objekt -- zde nanejvys alias + komentar k poslednimu nalezenemu atributu
-
-            #     elif isinstance(t, sql.IdentifierList):
-            #         for token in t.tokens:
-            #             obj = process_token(token, "over")  # TODO: pouzit "over" i zde, kdyz se dale mohou vyskytovat standardni tokeny (Identifier) predstavujici atributy?
-
-            #             # TODO: zpracovat vraceny objekt
-            
+            elif t.normalized == "OVER":  # V zasade by slo resit pomoci over_ahead, ale nebylo by nijak znatelne rychlejsi...
+                # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
+                # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
+                over_attribute = table.attributes[-1]
+                # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
+                token_counter -= 2
             elif (t.normalized != "DISTINCT"
                     and t.normalized != "CONNECT"
                     and t.normalized != "NOCYCLE"
@@ -726,6 +698,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 sql_components = []
         elif isinstance(t, sql.Where):
             # Struktura t.tokens: Where whitespace(s) [ Parenthesis | Comparison | Identifier | Exists ] [ ... ]
+
+            # TODO: co kdyz bude EXISTS soucasti logickeho vyrazu (napr. "WHERE attr = value AND EXISTS ...")? Co bude sqlparse vracet v takovem pripade + jak zpracovat?
+
             # Nejprve musime zjistit, jestli jde o obycejne WHERE, nebo o WHERE EXISTS. Toto lze provest nejjednoduseji tak, ze najdeme druhy token v poradi (pri preskakovani bilych znaku a komentaru) a zkontrolujeme, zda jde o EXISTS.
             # t.token_first(skip_ws=True, skip_cm=True)  # Neni potreba
             (j, token) = t.token_next(0, skip_ws=True, skip_cm=True)
@@ -800,16 +775,28 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         if wg_attribute == None:
                             if obj[-1].condition == "WITHIN_GROUP":
                                 wg_attribute = obj.pop()
+                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 1 token vice
+                                token_counter = max(0, token_counter - 1)
                         else:
                             attr_remainder = obj.pop(0)
                             wg_attribute.alias = attr_remainder.alias
-                            wg_attribute.condition = attr_remainder.condition  # TODO: nebo rovnou resetovat na None, kdyz stejne asi nemuze v attr_remainder byt nic jineho?
+                            wg_attribute.condition = attr_remainder.condition
                             wg_attribute.comment = attr_remainder.comment
                             table.attributes.append(wg_attribute)
                             if len(obj) > 0 and obj[-1].condition == "WITHIN_GROUP":
                                 wg_attribute = obj.pop()
+                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 1 token vice
+                                token_counter -= 1
                             else:
                                 wg_attribute = None
+                        # Podobne jako v casti vyse doresime pripadny nekompletni atribut z drivejska vlivem pritomnosti OVER (BUG 701).
+                        if over_attribute != None:
+                            attr_remainder = obj.pop(0)
+                            over_attribute.name = f"{over_attribute.name} OVER {attr_remainder.name}"
+                            over_attribute.alias = attr_remainder.alias
+                            over_attribute.condition = attr_remainder.condition
+                            over_attribute.comment = attr_remainder.comment
+                            over_attribute = None
                         # Nakonec k tabulce pridame atributy zbyle v obj
                         table.attributes.extend(obj)
                     elif known_attribute_aliases:
@@ -868,8 +855,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     # Resime blok WITH, kde navratovou hodnotou je pripadny komentar (byva vracen vzdy jako posledni sub-token, i kdyz se muze tykat az nasledujiciho tokenu). Ten si tedy ulozime a resetujeme token_counter.
                     comment_before = obj
                     token_counter = 0
-            # Token mame zpracovany, takze pokud neexistuje zadny nekompletni atribut (BUG: WITHIN GROUP), muzeme resetovat kontext
-            if wg_attribute == None:
+            # Token mame zpracovany, takze pokud neexistuje zadny nekompletni atribut (BUG: WITHIN GROUP, resp. OVER), muzeme resetovat kontext. K tomu ale musime zkontrolovat nasledujici token.
+            (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+            over_ahead = (next_token != None
+                    and next_token.ttype == sql.T.Keyword
+                    and next_token.normalized == "OVER")
+            if wg_attribute == None and not over_ahead:
                 is_within = None
         # Nakonec si ulozime kod otkenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -905,8 +896,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
-        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
+        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
+        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
