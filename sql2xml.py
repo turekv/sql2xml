@@ -372,17 +372,17 @@ def get_attribute_conditions(t: sql.Token) -> list:
         value = " ".join(components)
         attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
         return attributes
-    if isinstance(t, sql.Parenthesis):
-        # Projdeme t.tokens a postupne rekurzivne zpracujeme kazdy z patricnych sub-tokenu. Zaroven potrebujeme referenci na posledni token v t.tokens, abychom pripadne mohli predat relevantni komentar zpet do hlavni casti kodu.
-        comment_before = ""  # Potreba pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchziho vyskytu komentare
+    if isinstance(t, sql.Parenthesis) or isinstance(t, sql.Where):
+        # Projdeme t.tokens a postupne rekurzivne zpracujeme kazdy z patricnych sub-tokenu. Zaroven potrebujeme referenci na posledni token v t.tokens, abychom pripadne mohli predat relevantni komentar zpet do hlavni casti kodu. Zohlednit musime i pripadne klicove slovo WHERE.
         last_token = t.tokens[-1]
-        # Prvni token preskocime (jde o oteviraci zavorku)
+        comment_before = ""  # Potreba pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchoziho vyskytu komentare
+        # Prvni token preskocime (jde o oteviraci zavorku, resp. WHERE)
         (i, token) = t.token_next(0, skip_ws=True, skip_cm=False)
         while token != None:
             if is_comment(token):
                 comment_before = token.value.strip()
                 if token == last_token:
-                    # Zde jsme narazili na komentar k mezi-tabulce (napr. "JOIN ... ON ( ... ) komentar") -- byva uvedeno uplne na konci t.tokens. Pridame fiktivni atribut (name == alias == None, condition == "COMMENT", comment != None), ze ktereho pak bude komentar extrahovan a prirazen k tabulce
+                    # Zde jsme narazili na komentar k mezi-tabulce (napr. "JOIN ... ON ( ... ) komentar"), prip. komentar k nalsedujicimu bloku v SQL kodu. Pridame fiktivni atribut (name == alias == None, condition == "COMMENT", comment != None), ze ktereho pak bude komentar extrahovan.
                     attributes.append(Attribute(name=None, alias=None, condition="COMMENT", comment=token.value))
                     return attributes
                 if len(attributes) > 0:
@@ -413,53 +413,34 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 operator = token.normalized
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 components = []
-                while token != None:
+                while token != None and len(components) < 3:
                     if token.ttype == sql.T.Keyword:
                         components.append(token.normalized)
-                    elif token.ttype in sql.T.Literal:
-                        components.append(token.value)
                     elif is_comment(token):
                         comment = token.value
                     else:
-                        break
+                        # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl)
+                        components.append(token.value)
+
+                    # if token.ttype == sql.T.Keyword and len(components) < 3:
+                    #     components.append(token.normalized)
+                    # elif (token.ttype in sql.T.Literal
+                    #         or isinstance(token, sql.Identifier)
+                    #         or isinstance(token, sql.Function)
+                    #         or token.ttype in sql.T.Name):  # Napr. typ Placeholder
+                    #     components.append(token.value)
+                    # elif is_comment(token):
+                    #     comment = token.value
+                    # else:
+                    #     break
+
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 value = " ".join(components)
                 attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
+                # Jde o obycejny atribut (prip. jejich vycet)
                 attributes.extend(get_attribute_conditions(token))
             # Nakonec musime prejit na dalsi token
-            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-        return attributes
-    if isinstance(t, sql.Where):
-
-        # TODO: mozna by slo sloucit s kodem pro Parenthesis? (lisi se v podstate jen zohlednenim pripadneho komentare na konci)
-
-        # V tomto pripade musime pri prochazeni t.tokens (opet vc. komentaru) zohlednit i pripadne klicove slovo WHERE. Zaroven vime, ze prvni token v t.tokens je klicove slovo WHERE, cili tento token muzeme rovnou preskocit.
-        comment_before = ""  # Potreba pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchziho vyskytu komentare
-        (i, token) = t.token_next(0, skip_ws=True, skip_cm=False)
-        while token != None:
-            if is_comment(token):
-                # Pripadny komentar si ulozime (muze se tykat pripadneho "EXISTS SELECT ...").
-                comment_before = token.value.strip()
-            elif token.ttype == sql.T.Keyword and token.normalized == "EXISTS":
-                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                while token != None:
-                    if is_comment(token):
-                        # Pripadny komentar si opet ulozime
-                        comment_before = token.value.strip()
-                    elif isinstance(token, sql.Parenthesis):
-                        # Nasli jsme zavorku se SELECT, k cemuz je nutne vytvorit patricnou mezi-tabulku
-                        exists_table = Table(name_template="exists-select", comment=comment_before)
-                        Table.__tables__.append(exists_table)
-                        # Nove vytvorenou mezi-tabulku jeste musime svazat s hlavni tabulkou, na kterou tady ale nemame referenci. Pridame proto fiktivni atribut (name == alias == None, condition == "EXISTS_SELECT", comment == ID exists_table), ze ktereho bude patricny udaj v hlavnim kodu extrahovan
-                        attributes.append(Attribute(name=None, alias=None, condition="EXISTS_SELECT", comment=str(exists_table.id)))
-                        # Zavorku nyni zpracujeme jako standardni statement s tim, ze parametrem predame referenci na vytvorenou mezi-tabulku
-                        process_statement(token, exists_table)
-                        break
-                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-            elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
-                # Jde o obycejny SELECT (bez EXISTS), takze jen nacteme atributy a aktualizujeme je u aktualni tabulky -- union-table, pokud resime UNION (a kdy union_table != None), resp. table (zde nemuze byt None, protoze bud mame objekt zadany parametrem v process_statement(...), nebo jsme v drivejsim tokenu nasli SELECT a tabulku potazmo zaroven i vytvorili).
-                attributes.extend(get_attribute_conditions(token))
             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
         return attributes
 
@@ -719,6 +700,16 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     attributes.pop(j)
                 else:
                     j += 1
+            # Pokud jsme pri nacitani atributu nasli jako posledni sub-token komentar, jde temer jiste o komentar k nasledujicimu bloku SQL kodu. Fiktivni atribut s nesmyslnymi parametry (name == alias == None, condition == "COMMENT", comment != None) nyni komentar ziskame zpet a aktualizujeme pomoci nej comment_before.
+            if len(attributes) > 0:
+                last_attribute = attributes[-1]
+                if (last_attribute.name == None
+                        and last_attribute.alias == None
+                        and last_attribute.condition == "COMMENT"
+                        and last_attribute.comment != None):
+                    comment_before = last_attribute.comment
+                    attributes.pop()
+            # Nyni muzeme aktualizovat atributy u patricne tabulky (union_table, resp. table -- dle situace)
             if union_table != None:
                 union_table.update_attributes(attributes)
             else:
@@ -744,13 +735,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             else:
                                 j += 1
                         # Pokud jsme pri nacitani atributu v "JOIN ... ON ..."" nasli jako posledni sub-token komentar, jde o komentar k mezi-tabulce reprezentujici JOIN. Do seznamu atributu byl v takovem pripade jako posledni pridat fiktivni atribut s nesmyslnymi parametry (name == alias == None, condition == "COMMENT", comment != None), ze ktereho nyni komentar ziskame zpet a priradime ho k dane tabulce.
-                        last_attribute = obj[-1]
-                        if (last_attribute.name == None
-                                and last_attribute.alias == None
-                                and last_attribute.condition == "COMMENT"
-                                and last_attribute.comment != None):
-                            join_table.comment = last_attribute.comment
-                            obj.pop()
+                        if len(obj) > 0:
+                            last_attribute = obj[-1]
+                            if (last_attribute.name == None
+                                    and last_attribute.alias == None
+                                    and last_attribute.condition == "COMMENT"
+                                    and last_attribute.comment != None):
+                                join_table.comment = last_attribute.comment
+                                obj.pop()
                         # Vraceny objekt (nyni uz bez pripadneho fiktivniho atributu s komentarem) muzeme pouzit k aktualizaci atributu i mezitabulky reprezentujici JOIN
                         join_table.update_attributes(obj)
 
@@ -890,8 +882,8 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
+        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
@@ -971,4 +963,4 @@ if __name__ == "__main__":
     finally:
         if f != None:
             f.close()
-    os._exit(exit_code)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
+    os._exit(exit_code)  # sys.exit(exit_code) nelze s exit_code > 0 pouzit -- vyvola dalsi vyjimku (SystemExit)
