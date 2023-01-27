@@ -351,6 +351,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
         return attributes
     if isinstance(t, sql.Identifier):
         # Projdeme t.tokens, pricemz dopredu vime, ze kolekce attributes bude ve vysledku obsahovat jediny atribut
+        comment = ""
         i = 0
         token = t.token_first(skip_ws=True, skip_cm=False)
         name = token.value
@@ -404,6 +405,26 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         process_statement(token, exists_table)
                         break
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+            elif isinstance(token, sql.Identifier):
+                # Nasledujici tokeny v t.tokens budeme prochazet tak dlouho, nez ziskame jednu kompletni podminku. Toto nelze resit rekurzivne opetovnym volanim get_attribute_conditions(...), protoze tokeny musime prochazet na stavajici urovni (token \in t.tokens), nikoliv o uroven nize (token.tokens)
+                comment = ""
+                name = token.value
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                operator = token.normalized
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                components = []
+                while token != None:
+                    if token.ttype == sql.T.Keyword:
+                        components.append(token.normalized)
+                    elif token.ttype in sql.T.Literal:
+                        components.append(token.value)
+                    elif is_comment(token):
+                        comment = token.value
+                    else:
+                        break
+                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                value = " ".join(components)
+                attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
                 attributes.extend(get_attribute_conditions(token))
             # Nakonec musime prejit na dalsi token
@@ -411,7 +432,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
         return attributes
     if isinstance(t, sql.Where):
 
-        # TODO: mozna by slo sloucit s kodem pro Parenthesis?
+        # TODO: mozna by slo sloucit s kodem pro Parenthesis? (lisi se v podstate jen zohlednenim pripadneho komentare na konci)
 
         # V tomto pripade musime pri prochazeni t.tokens (opet vc. komentaru) zohlednit i pripadne klicove slovo WHERE. Zaroven vime, ze prvni token v t.tokens je klicove slovo WHERE, cili tento token muzeme rovnou preskocit.
         comment_before = ""  # Potreba pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchziho vyskytu komentare
@@ -603,30 +624,6 @@ def process_token(t, is_within=None, comment_before="") -> Any:
     if is_within == "on":
         # Token je v kontextu ON ("SELECT ... JOIN ... ON <token>"). Zde tedy jde o atributy vc. hodnot, ktere u nich pozadujeme
         return get_attribute_conditions(t)
-    # if isinstance(t, sql.Identifier):
-
-    #     # TODO: muze tento pripad vubec nastat? (drive mozna bylo potreba, nyni se zda byt zbytecne)
-
-    #     process_token(t.tokens[i], is_within, comment_before)
-    #     return None
-    #     # return get_name_alias_comment(t)
-    
-    # if isinstance(t, sql.IdentifierList):
-
-    #     # TODO: muze tento pripad vubec nastat? (drive mozna bylo potreba, nyni se zda byt zbytecne)
-    #     # TODO: ma vubec smysl tady resit predavani komentare?
-
-    #     for i in range(len(t.tokens)):
-    #         if i == 0:
-    #             process_token(t.tokens[i], is_within, comment_before)
-    #         else:
-
-    #             # TODO: zde bude asi nutne aktualizovat comment_before podle toho, co je v t.tokens?
-
-    #             process_token(t.tokens[i], is_within)
-    #     # for token in t:
-    #     #     process_token(token, is_within)
-    #     return None
 
 
 def process_statement(s, table=None, known_attribute_aliases=False) -> None:
@@ -893,24 +890,25 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
+        source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        # encoding = "utf-8"
+        encoding = "utf-8"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
-        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        encoding = "utf-8-sig"
+        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
+        # encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
 
+    exit_code = 0
     f = None
     try:
         print()
@@ -969,7 +967,8 @@ if __name__ == "__main__":
             # f.write(output + "\n")
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
+        exit_code = 1
     finally:
         if f != None:
             f.close()
-    os._exit(1)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
+    os._exit(exit_code)  # sys.exit(1) nelze pouzit -- vyvola dalsi vyjimku (SystemExit)
