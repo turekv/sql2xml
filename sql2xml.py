@@ -311,7 +311,7 @@ def process_comparison(t: sql.Comparison) -> Attribute:
     # Pocatecni tokeny v t.tokens jsou soucasti jmena atributu (s pripadnymi oddelovaci/teckami) --> tyto ukladame do components
     components = []
     j = 0
-    # Posledni cast podminky je nutna v pripade, ze pred operatorem neni mezera
+    # Posledni cast podminky je nutna v pripade, ze pred operatorem neni mezera. POZOR: "...ttype != sql.T.Comparison" NENI TOTEZ JAKO "not isinstance(..., sql.Comparison)"!
     while j < len(t.tokens) and not t.tokens[j].is_whitespace and t.tokens[j].ttype != sql.T.Comparison:
         components.append(t.tokens[j].value)
         j += 1
@@ -405,37 +405,32 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         process_statement(token, exists_table)
                         break
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-            elif isinstance(token, sql.Identifier):
+            elif isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
                 # Nasledujici tokeny v t.tokens budeme prochazet tak dlouho, nez ziskame jednu kompletni podminku. Toto nelze resit rekurzivne opetovnym volanim get_attribute_conditions(...), protoze tokeny musime prochazet na stavajici urovni (token \in t.tokens), nikoliv o uroven nize (token.tokens)
                 comment = ""
                 name = token.value
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 operator = token.normalized
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                components = []
-                while token != None and len(components) < 3:
-                    if token.ttype == sql.T.Keyword:
-                        components.append(token.normalized)
-                    elif is_comment(token):
-                        comment = token.value
-                    else:
-                        # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl)
-                        components.append(token.value)
-
-                    # if token.ttype == sql.T.Keyword and len(components) < 3:
-                    #     components.append(token.normalized)
-                    # elif (token.ttype in sql.T.Literal
-                    #         or isinstance(token, sql.Identifier)
-                    #         or isinstance(token, sql.Function)
-                    #         or token.ttype in sql.T.Name):  # Napr. typ Placeholder
-                    #     components.append(token.value)
-                    # elif is_comment(token):
-                    #     comment = token.value
-                    # else:
-                    #     break
-
+                if operator == "IS":
+                    value = token.normalized
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                value = " ".join(components)
+                    if is_comment(token):
+                        comment = token.value
+                else:
+                    components = []
+                    while token != None and len(components) < 3:
+                        if token.ttype == sql.T.Keyword:
+                            components.append(token.normalized)
+                        elif is_comment(token):
+                            comment = token.value
+                        else:
+                            # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl). Ukladame vsak .normalized, cimz dojde k orezani pripadnych internich komentaru.
+                            components.append(token.normalized)
+                        (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                    # Jeste musime snizit index (i), abychom nepreskocili aktualni token, ktery muze byt podstatny
+                    i -= 1
+                    value = " ".join(components)
                 attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
                 # Jde o obycejny atribut (prip. jejich vycet)
@@ -481,6 +476,7 @@ def process_with_element(t, comment_before="") -> str:
         else:
             comment_after = ""
         table = Table(name=name, comment=comment_before, source_sql=t.value)
+        Table.__tables__.append(table)
         if len(aliases) > 0:
             # Zname uz aliasy atributu (byly v zavorce za nazvem tabulky), ale nic vic k atributum tabulky nevime. Pouze tedy nastavime parametr, na zaklade ktereho pak v hlavni casti kodu (process_statement(...)) budou k atributum doplneny zbyle udaje. Jmena atributu budou pro poradek (at nejsou None) docasne "TBD".
             known_attribute_aliases = True
@@ -488,7 +484,6 @@ def process_with_element(t, comment_before="") -> str:
                 table.attributes.append(Attribute(name="TBD", alias=a))
         else:
             known_attribute_aliases = False
-        Table.__tables__.append(table)
         # Nakonec doresime zavorku, odkaz na jiz vytvorenou tabulku predame stejne jako parametr ohledne (ne)znalosti aliasu atributu
         process_statement(t.tokens[i], table, known_attribute_aliases)
     return comment_after
@@ -512,9 +507,9 @@ def process_identifier_or_function(t) -> list:
         if leading_portion.startswith("select"):
             # Vytvorime mezi-tabulku, u ktere jako komentar nastavime ten vyse zjisteny, a aktualizujeme jmeno atributu podle jmena tabulky
             table = Table(name_template="select", comment=comment)
+            Table.__tables__.append(table)
             # Sub-token se SELECT je hned jako prvni, neni potreba hledat ho iterovanim pres token.tokens
             process_statement(t.tokens[0], table)
-            Table.__tables__.append(table)
             name = f"<{table.name}>"
             # Nakonec je nutne zaridit nastaveni zavislosti nadrazene tabulky. Na tu ale zde nemame k dispozici odkaz. ID nove mezi-tabulky tedy predame jako fiktivni atribut (name == alias == None, condition == "SELECT", comment == ID) a zavislost (prip. zavislosti, nebot jich muze byt vice) pak doresime v hlavnim kodu.
             attributes.append(Attribute(name=None, alias=None, condition="SELECT", comment=str(table.id)))
@@ -564,14 +559,22 @@ def process_token(t, is_within=None, comment_before="") -> Any:
         return attributes
     if is_within == "from" or is_within == "join":
         # Token je v kontextu FROM ("SELECT ... FROM <token>"), prip. JOIN (napr. "SELECT ... FROM ... INNER JOIN <token>"). V obou pripadech muze byt token jak typu Parenthesis ("SELECT ... FROM ( SELECT ... )", "... JOIN ( SELECT ... )"), tak muze jit o prosty nazev zdrojove tabulky + pripadny alias a komentar.
+        # Zde navic mohou nastat dva pripady: bud je za zavorkou alias a/nebo komentar (--> jako statement zpracujeme t.tokens[0]), nebo je v SQL kodu pouze zavorka (--> jako statement zpracujeme cely token).
+        if isinstance(t, sql.Parenthesis):
+            # Pripadny komentar by byl az za zavorkou, tzn. comment_before muzeme ignorovat
+            table = Table(name_template="select")
+            Table.__tables__.append(table)
+            process_statement(t, table)
+            return table
         if isinstance(t.tokens[0], sql.Parenthesis):
             # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias [ whitespace(s) komentar ] ]
             # V zavorce je vzdy SELECT, takze je potreba vytvorit odpovidajici (mezi-)tabulku (sablona == "select")
             table = Table(name_template="select")
+            Table.__tables__.append(table)
             # Prvni sub-token (t.tokens[0]) i vsechno ostatni az po pripadny alias ci komentar zatim preskocime.
             i = 1
             while (i < len(t.tokens) and (t.tokens[i].is_whitespace
-            or (t.tokens[i].ttype == sql.T.Keyword and t.tokens[i].normalized == "AS"))):
+                    or (t.tokens[i].ttype == sql.T.Keyword and t.tokens[i].normalized == "AS"))):
                 i += 1
             # Ted do kolekce components ulozime vse, co je soucasti aliasu
             components = []
@@ -586,11 +589,10 @@ def process_token(t, is_within=None, comment_before="") -> Any:
             if (is_comment(last_token)
                     and (table.comment == None or len(table.comment) == 0)):
                 table.comment = last_token.value.strip()
-            Table.__tables__.append(table)
             # Uplne nakonec pak zpracujeme prvni subtoken (t.tokens[0]) jako samostatny statement a odkaz na vytvorenou tabulku predame parametrem
             process_statement(t.tokens[0], table)
             return table
-        # V pripade, ze token neni typu Parethesis, jde o prosty nazev zdrojove tabulky + pripadny alias a komentar. Tyto ziskame jednoduse zavolanim get_name_alias_comment(...).
+        # V pripade, ze token (prip. prvni subtoken) neni typu Parenthesis, jde o prosty nazev zdrojove tabulky + pripadny alias a komentar. Tyto ziskame jednoduse zavolanim get_name_alias_comment(...).
         return get_name_alias_comment(t)
     if is_within == "with":
         # Token je v kontextu WITH -- Identifier ("WITH <token: name AS ( SELECT ... )>"), IdentifierList ("WITH <token: name_1 AS ( SELECT ... ), name_2 AS ( SELECT ... ), ...>")
@@ -634,6 +636,10 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku OVER (viz BUG zmineny v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     over_attribute = None
     while t != None:
+
+        if "zct.studium_id" in t.value:
+            print()
+
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
@@ -664,13 +670,34 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 over_attribute = table.attributes[-1]
                 # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
                 token_counter -= 2
-            elif (t.normalized != "DISTINCT"
-                    and t.normalized != "CONNECT"
-                    and t.normalized != "NOCYCLE"
-                    and t.normalized != "GROUP"):
-                # Pri nalezeni "obecneho" klicoveho slova s parametrem/y (tzn. s vyjimkou tech uvedenych v podmince) preskocime nasledujici token -- napr. i zpusob razeni v "ORDER BY name ASC" je totiz vracen jako "<token: Keyword> <token: Name Order>". Jako jeden token (IdentifierList, Parenthesis, ...) je pritom vracena i skupina parametru klicoveho slova nebo Comparison v pripade "CONNECT BY NOCYCLE PRIOR ..." (BY podle vseho za sebou vzdy ma alespon jeden "preskocitelny" token).
+            elif (t.normalized == "ORDER BY"
+                    or t.normalized == "GROUP BY"):
+                # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime).
                 sql_components.append(t.value)
+                join_components.append(t.value)
+                union_components.append(t.value)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            elif t.normalized == "CONNECT":
+                # Zde nelze obecne rici, jakym zpusobem budou tokeny vraceny (nepovinna klicova slova, Identifier vs. Builtin + Comparison + Integer vs. ...). Nasledujici tokeny tedy musime prochazet a ukladat do kolekci (sql_components atd.) tak dlouho, nez najdeme Comparison. POZOR: "...ttype != sql.T.Comparison" NENI TOTEZ JAKO "not isinstance(..., sql.Comparison)"!
+                while t != None and not (t.ttype == sql.T.Comparison or isinstance(t, sql.Comparison)):
+                    sql_components.append(t.value)
+                    join_components.append(t.value)
+                    union_components.append(t.value)
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                # Comparison si ulozime do kolekci
+                sql_components.append(t.value)
+                join_components.append(t.value)
+                union_components.append(t.value)
+                # Ted jeste overime, zda je nasl. token Literal, prip. zavorka. Pokud neni, preskocime na zacatek cyklu, jinak pokracujeme na konec cyklu (ulozeni hodnoty + nacteni noveho tokenu).
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                if not (t.ttype in sql.T.Literal or isinstance(t, sql.Parenthesis)):
+                    continue
+            else:
+
+                # DEBUG
+                print()
+
+            # Kazde jine vyse neuvedene klicove slovo (u kterych nepredpokladame vyskyt parametru) proste na konci tohoto cyklu ulozime a nacteme dalsi token
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             is_within = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
@@ -715,7 +742,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             else:
                 table.update_attributes(attributes)
         elif not t.ttype == sql.T.Punctuation:
-            # Jakykoliv jiny token (tedy pokud nejde o Punctuation) zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before)
+            # Jakykoliv jiny token (tedy pokud nejde o Punctuation) zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before).
+            # Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je is_within == None, tzn. process_token(...) vrati None.
             obj = process_token(t, is_within, comment_before)
             # Navratova hodnota process_token(...) muze byt ruznych typu v zavislosti na kontextu apod. Na zaklade toho se nyni rozhodneme, jakym konkretnim zpusobem je potreba s ni nalozit.
             if obj != None:
@@ -776,6 +804,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 token_counter = max(0, token_counter - 1)
                         else:
                             attr_remainder = obj.pop(0)
+                            wg_attribute.name = f"{wg_attribute.name} WITHIN GROUP {attr_remainder.name}"
                             wg_attribute.alias = attr_remainder.alias
                             wg_attribute.condition = attr_remainder.condition
                             wg_attribute.comment = attr_remainder.comment
@@ -852,12 +881,45 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     # Resime blok WITH, kde navratovou hodnotou je pripadny komentar (byva vracen vzdy jako posledni sub-token, i kdyz se muze tykat az nasledujiciho tokenu). Ten si tedy ulozime a resetujeme token_counter.
                     comment_before = obj
                     token_counter = 0
-            # Token mame zpracovany, takze pokud neexistuje zadny nekompletni atribut (BUG: WITHIN GROUP, resp. OVER), muzeme resetovat kontext. K tomu ale musime zkontrolovat nasledujici token.
+            # Nyni musime jako prvni vec zkontrolovat, jestli nasledujici token neni s hodnotou "DATA", coz sqlparse oznaci za Keyword (pravdepodobne BUG). Pokud tomu tak je, jde o alias k predchozimu nazvu atributu nebo tabulky, ktery adekvatne priradime, ulozime stavajici token do kolekci, opravime hodnotu indexu (i) a promenne drzici token (t) a nacteme novy next_token.
+            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, resp. OVER), muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token.
+            # Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
+            over_ahead = False
+            and_ahead = False
             (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
-            over_ahead = (next_token != None
-                    and next_token.ttype == sql.T.Keyword
-                    and next_token.normalized == "OVER")
-            if wg_attribute == None and not over_ahead:
+            if next_token != None and next_token.ttype == sql.T.Keyword:
+                if next_token.value.upper() == "DATA":
+                    # Priradime alias podle aktualne reseneho kontextu (pri jinak syntakticky spravnem SQL kodu musi nyni byt obj != None, tzn. neni potreba toto kontrolovat)
+                    if isinstance(obj, list) and isinstance(obj[0], Attribute):
+                        if is_within == "on":
+                            join_table.attributes[-1].alias = next_token.value
+                        elif is_within == "union-select":
+                            union_table.attributes[-1].alias = next_token.value
+                        elif is_within == "select":
+                            table.attributes[-1].alias = next_token.value
+                    elif isinstance(obj, tuple) and isinstance(obj[0], str):
+                        src_table.add_alias(next_token.value)
+                    # Ulozime hodnotu akt. tokenu
+                    sql_components.append(t.value)
+                    join_components.append(t.value)
+                    union_components.append(t.value)
+                    # Aktualizujeme index a akt. token
+                    i = j
+                    t = next_token
+                    # Nacteme novy next_token
+                    (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+                # Zde musime znovu zkontrolovat, zda i pripadny novy next_token neni None atd.
+                if next_token != None and next_token.ttype == sql.T.Keyword:
+                    over_ahead = next_token.normalized == "OVER"
+                    and_ahead = next_token.normalized == "AND"
+            # # Kod nize staci v pripade, ze se neresi Keyword/alias "DATA"
+            # (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+            # over_ahead = False
+            # and_ahead = False
+            # if next_token != None and next_token.ttype == sql.T.Keyword:
+            #     over_ahead = next_token.normalized == "OVER"
+            #     and_ahead = next_token.normalized == "AND"
+            if wg_attribute == None and not over_ahead and not and_ahead:
                 is_within = None
         # Nakonec si ulozime kod otkenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -883,19 +945,20 @@ if __name__ == "__main__":
 
         # DEBUG
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8.sql"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        encoding = "utf-8"
+        # encoding = "utf-8"
+        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
+        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        # encoding = "utf-8-sig"
+        encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
