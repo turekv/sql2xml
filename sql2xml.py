@@ -278,6 +278,17 @@ def get_name_alias_comment(t: sql.Token) -> tuple:
     # Pocatecni tokeny v t.tokens jsou soucasti jmena (s pripadnymi oddelovaci/teckami) --> slozky jmena tedy ukladame do kolekce components tak dlouho, nez narazime na bily znak nebo komentar (ev. konec t.tokens)
     i = 0
     components = []
+    # Nejprve musime obejit BUG "connect_by_root". Pokud jsme narazili na danou situaci, mame [connect_by_root] [ws] [name AS alias]
+    if t.value.lower().startswith("connect_by_root"):
+        components.append(t.tokens[0].normalized)
+        components.append(" ")  # Musime ulozit i mezeru za "connect_by_root"!
+        # Nyni preskocime vsechny nasledujici bile znaky (mezery, \n apod.)
+        i = 1
+        while i < len(t.tokens) and t.tokens[i].is_whitespace:
+            i += 1
+        # Do promenne t ulozime nasledujici token, kde je jmeno + pripadny alias a komentar, resetujeme index i a pokracujeme standardnim zpusobem
+        t = t.tokens[i]
+        i = 0
     while (i < len(t.tokens)
             and not t.tokens[i].is_whitespace
             and not is_comment(t.tokens[i])):
@@ -640,6 +651,11 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
     while t != None:
+
+        # DEBUG
+        if "connect_by_root" in t.value:
+            print()
+
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
@@ -950,14 +966,14 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         # encoding = "utf-8"
-        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
+        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
+        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
