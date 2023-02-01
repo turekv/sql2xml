@@ -101,7 +101,7 @@ class Table:
             names = "<žádné>"
         comment = Table.__trim_to_length__(self.comment)
         source_sql = Table.__trim_to_length__(self.source_sql)
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Attributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
     
     @classmethod
     def __trim_to_length__(cls, text: str) -> str:
@@ -281,7 +281,7 @@ def get_name_alias_comment(t: sql.Token) -> tuple:
     while (i < len(t.tokens)
             and not t.tokens[i].is_whitespace
             and not is_comment(t.tokens[i])):
-        components.append(t.tokens[i].value)
+        components.append(t.tokens[i].normalized)
         i += 1
     name = "".join(components)
     # Nyni preskocime vsechno, co je bilym znakem nebo klicovym slovem "AS" (na komentar ted narazit nemuzeme -- bud jsme ho museli najit v predchozim kroku, nebo bude az za aliasem)
@@ -493,7 +493,7 @@ def process_identifier_or_function(t) -> list:
     """Zpracuje token typu Identifier nebo Function a vrati odpovidajici atribut. Je-li pro popsani atributu potreba mezi-tabulka (napr. pokud je misto obycejneho atributu "( SELECT ... )" nebo "( CASE ... )"), vrati krome odpovidajiciho atributu i fiktivni atribut s udajem pro svazani nadrazene tabulky s nove vytvorenou mezi-tabulkou (name == alias == condition == None, comment == ID mezi-tabulky)."""
     attributes = []
     # Jmeno a pripadny alias zjistime pomoci get_name_alias_comment(...)
-    name, alias, comment = get_name_alias_comment(t)  # TODO: Literal mozna do uvozovek?
+    name, alias, comment = get_name_alias_comment(t)
     # Do pomocne promenne si ulozime kod v tokenu (bude potreba nize)
     if len(name) > 1:
         leading_portion = name[1:].strip().lower()
@@ -528,34 +528,37 @@ def process_token(t, is_within=None, comment_before="") -> Any:
             Table.__tables__.append(table)
             process_statement(t, table)
             return table
-        # POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> BUG report ( https://github.com/andialbrecht/sqlparse/issues/700 )
-        # Bug vyse prozatim obejdeme tak, ze overime, zda token konci na WITHIN -- pokud ano, je temer jiste, ze jde o zminenou situaci a posledni nalezeny atribut pak bude nekompletni (--> nastavime u nej condition na "WITHIN_GROUP", podle cehoz pak u nej v hlavnim kodu pozname, ze je nekompletni). Takovy nekompletni atribut pritom muze vzdy byt uveden pouze jako posledni ve vracenem seznamu atributu (tzn. zminene nastaveni condition provedeme dodatecne az uplne jako posledni krok).
-        last_attr_within_group = t.value.lower().endswith("within")
+        # POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> BUG report ( https://github.com/andialbrecht/sqlparse/issues/700 ). Podobne je nekdy vracena funkce COUNT (a nejspis i jine funkce) -- nazev fce je vracen jako klicove slovo na konci Identifier (za carkou; resp. posledniho Identifieru v IdentifierList) a zavorka s parametry pak jako zacatek naledujiciho tokenu.
+        # Bugy vyse prozatim obejdeme tak, ze pri zpracovavani vzdy overime posledni subtoken (Identifier WITHIN (vraceno jako Identifier), resp. Keyword s nazvem funkce -- pokud ano, je temer jiste, ze jde o zminenou situaci a posledni nalezeny atribut pak bude nekompletni (--> nastavime u nej condition na "SPLIT_ATTRIBUTE", podle cehoz pak v hlavnim kodu pozname, ze tento je nekompletni). Takovy nekompletni atribut pritom muze vzdy byt uveden pouze jako posledni ve vracenem seznamu atributu.
+        split_attr_link = None
+        if t.value.lower().endswith("within"):
+            # Musi byt s mezerami na zacatku/konci, aby naopak funkce (COUNT apod.) mohly byt bez mezer mezi nazvem a zavorkou
+            split_attr_link = " WITHIN GROUP "
+        elif isinstance(t, sql.IdentifierList) and t.tokens[-1].ttype == sql.T.Keyword:
+            split_attr_link = ""
         # Je-li token typu Identifier, IdentifierList, Function, prip. Wildcard, jde o obycejny atribut ci seznam atributu. Metoda pak podle toho vrati seznam s jednim ci vicero atributy.
         attributes = []
         if isinstance(t, sql.Identifier) or isinstance(t, sql.Function):
             attr = process_identifier_or_function(t)
-            # Je-li atribut nekompletni (BUG: WITHIN GROUP), nastavime u nej condition na "WITHIN_GROUP"
-            if last_attr_within_group:
-                attr[-1].condition = "WITHIN_GROUP"
             attributes.extend(attr)
         elif isinstance(t, sql.IdentifierList):
             # Zde postupujeme analogicky pripadu vyse, jen s tim rozdilem, ze musime projit vsechny tokeny v t.tokens
             for token in t.tokens:
                 if isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
                     attributes.extend(process_identifier_or_function(token))
-                elif token.ttype in sql.T.Literal:
+                elif token.ttype in sql.T.Literal or token.ttype == sql.T.Keyword:
                     # Nasli jsme literal (typicky v situaci, kdy je ve WITH definovana pomocna tabulka s konkretnimi -- v SQL kodu zadanymi -- hodnotami)
-                    attributes.append(Attribute(name=token.value))  # TODO: Literal mozna do uvozovek?
-            # Je-li posledni atribut nekompletni (BUG: WITHIN GROUP), nastavime u nej condition na "WITHIN_GROUP"
-            if last_attr_within_group:
-                attributes[-1].condition = "WITHIN_GROUP"
+                    attributes.append(Attribute(name=token.normalized))
         elif t.ttype == sql.T.Wildcard:
             # Typicky "SELECT * FROM ..."
             attributes.append(Attribute(name="*"))
         elif t.ttype in sql.T.Literal:
             # Nasli jsme literal (typicky v situaci, kdy je ve WITH definovana pomocna tabulka s konkretnimi -- v SQL kodu zadanymi -- hodnotami)
-            attributes.append(Attribute(name=t.value))  # TODO: Literal mozna do uvozovek?
+            attributes.append(Attribute(name=t.value))
+        # Nakonec jeste condition na "SPLIT_ATTRIBUTE" a comment na patricny spojovaci retezec, pokud je posledni atribut nekompletni
+        if split_attr_link != None:
+            attributes[-1].condition = "SPLIT_ATTRIBUTE"
+            attributes[-1].comment = split_attr_link
         return attributes
     if is_within == "from" or is_within == "join":
         # Token je v kontextu FROM ("SELECT ... FROM <token>"), prip. JOIN (napr. "SELECT ... FROM ... INNER JOIN <token>"). V obou pripadech muze byt token jak typu Parenthesis ("SELECT ... FROM ( SELECT ... )", "... JOIN ( SELECT ... )"), tak muze jit o prosty nazev zdrojove tabulky + pripadny alias a komentar.
@@ -605,6 +608,9 @@ def process_token(t, is_within=None, comment_before="") -> Any:
                 comment_before = process_with_element(token, comment_before)
             return comment_before
     if is_within == "on":
+
+        # TODO: bug s COUNT apod. mozna muze byt relevantni i zde? --> OVERIT
+
         # Token je v kontextu ON ("SELECT ... JOIN ... ON <token>"). Zde tedy jde o atributy vc. hodnot, ktere u nich pozadujeme
         return get_attribute_conditions(t)
 
@@ -631,15 +637,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # union_* jsou potreba v pripade, ze sjednocovani je provadeno bez prikazu "SELECT ..." v zavorce (tzn. "SELECT ... UNION SELECT ..."), jelikoz pak je patricny SQL kod vracen jako prosta sekvence tokenu). Pokud je nektery SELECT v zavorkach, zpracovava se jako samostatny statement.
     union_components = []
     union_table = None
-    # Nekompletni atribut vznikly v dusledku WITHIN GROUP (viz BUG zmineny v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
-    wg_attribute = None
-    # Nekompletni atribut vznikly v dusledku OVER (viz BUG zmineny v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
-    over_attribute = None
+    # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
+    split_attribute = None
     while t != None:
-
-        if "zct.studium_id" in t.value:
-            print()
-
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
@@ -667,7 +667,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             elif t.normalized == "OVER":  # V zasade by slo resit pomoci over_ahead, ale nebylo by nijak znatelne rychlejsi...
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
-                over_attribute = table.attributes[-1]
+                split_attribute = table.attributes[-1]
+                split_attribute.comment = " OVER "
                 # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
                 token_counter -= 2
             elif (t.normalized == "ORDER BY"
@@ -695,7 +696,10 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             else:
 
                 # DEBUG
-                print()
+                if (t.normalized != "DISTINCT"
+                        and t.normalized != "GROUP"
+                        and not (is_within == "on" and t.normalized == "AND")):
+                    print(f"\n>>> POTENCIALNE PROBLEMATICKE KLICOVE SLOVO: {t.normalized}\n")
 
             # Kazde jine vyse neuvedene klicove slovo (u kterych nepredpokladame vyskyt parametru) proste na konci tohoto cyklu ulozime a nacteme dalsi token
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
@@ -796,33 +800,30 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 obj.pop(j)
                             else:
                                 j += 1
-                        # Dale musime zkontrolovat, jestli nemame ze zpracovavani minuleho tokenu nekomplentni atribut (BUG: WITHIN GROUP). Pokud ne, zkontrolujeme posledni nyni vraceny atribut, zda nahodou neni takovym objektem. Jestlize naopak nekompletni atribut mame, sloucime ho s prvnim nyni vracenym atributem (ktery nasledne odebereme z obj) a takto vznikly kompletni atribut pridame k tabulce. Zaroven nelze rovnou resetovat wg_attribute, jelikoz i zde muze byt posledni atribut opet nekompletni...
-                        if wg_attribute == None:
-                            if obj[-1].condition == "WITHIN_GROUP":
-                                wg_attribute = obj.pop()
-                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 1 token vice
+                        # Dale musime zkontrolovat, jestli nemame ze zpracovavani minuleho tokenu nekomplentni atribut (BUG: WITHIN GROUP apod.). Pokud ne, zkontrolujeme posledni nyni vraceny atribut, zda nahodou neni takovym objektem. Jestlize naopak nekompletni atribut mame, sloucime ho s prvnim nyni vracenym atributem (ktery nasledne odebereme z obj) a takto vznikly kompletni atribut pridame k tabulce. Zde nelze rovnou resetovat split_attribute, jelikoz i zde muze byt posledni atribut opet nekompletni...
+                        if split_attribute == None:
+                            if obj[-1].condition == "SPLIT_ATTRIBUTE":
+                                split_attribute = obj.pop()
+                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu nacteme o 1 token vice
                                 token_counter = max(0, token_counter - 1)
                         else:
                             attr_remainder = obj.pop(0)
-                            wg_attribute.name = f"{wg_attribute.name} WITHIN GROUP {attr_remainder.name}"
-                            wg_attribute.alias = attr_remainder.alias
-                            wg_attribute.condition = attr_remainder.condition
-                            wg_attribute.comment = attr_remainder.comment
-                            table.attributes.append(wg_attribute)
-                            if len(obj) > 0 and obj[-1].condition == "WITHIN_GROUP":
-                                wg_attribute = obj.pop()
-                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 1 token vice
+                            # Pokud napr. mezi "GROUP" a nasledujici zavorkou neni mezera, je pokracovani tokenu vc. klicoveho slova "GROUP". Zkontrolujeme tedy, zda jmeno attr_remainder zacina na "(" -- pokud ne a spojovaci reteze (split_attribute.comment) zaroven obsahuje vice nez jedno slovo, to posledni z nej odstranime.
+                            attr_link = split_attribute.comment.split()
+                            if not attr_remainder.name.startswith("(") and len(attr_link) > 1:
+                                attr_link.pop()
+                                split_attribute.comment = " " + " ".join(attr_link) + " "
+                            split_attribute.name = f"{split_attribute.name}{split_attribute.comment}{attr_remainder.name}"
+                            split_attribute.alias = attr_remainder.alias
+                            split_attribute.condition = attr_remainder.condition
+                            split_attribute.comment = attr_remainder.comment
+                            table.attributes.append(split_attribute)
+                            if len(obj) > 0 and obj[-1].condition == "SPLIT_ATTRIBUTE":
+                                split_attribute = obj.pop()
+                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu nacteme o 1 token vice
                                 token_counter -= 1
                             else:
-                                wg_attribute = None
-                        # Podobne jako v casti vyse doresime pripadny nekompletni atribut z drivejska vlivem pritomnosti OVER (BUG 701).
-                        if over_attribute != None:
-                            attr_remainder = obj.pop(0)
-                            over_attribute.name = f"{over_attribute.name} OVER {attr_remainder.name}"
-                            over_attribute.alias = attr_remainder.alias
-                            over_attribute.condition = attr_remainder.condition
-                            over_attribute.comment = attr_remainder.comment
-                            over_attribute = None
+                                split_attribute = None
                         # Nakonec k tabulce pridame atributy zbyle v obj
                         table.attributes.extend(obj)
                     elif known_attribute_aliases:
@@ -882,8 +883,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     comment_before = obj
                     token_counter = 0
             # Nyni musime jako prvni vec zkontrolovat, jestli nasledujici token neni s hodnotou "DATA", coz sqlparse oznaci za Keyword (pravdepodobne BUG). Pokud tomu tak je, jde o alias k predchozimu nazvu atributu nebo tabulky, ktery adekvatne priradime, ulozime stavajici token do kolekci, opravime hodnotu indexu (i) a promenne drzici token (t) a nacteme novy next_token.
-            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, resp. OVER), muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token.
-            # Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
+            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
             over_ahead = False
             and_ahead = False
             (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
@@ -919,7 +919,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # if next_token != None and next_token.ttype == sql.T.Keyword:
             #     over_ahead = next_token.normalized == "OVER"
             #     and_ahead = next_token.normalized == "AND"
-            if wg_attribute == None and not over_ahead and not and_ahead:
+            if split_attribute == None and not over_ahead and not and_ahead:
                 is_within = None
         # Nakonec si ulozime kod otkenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -951,7 +951,7 @@ if __name__ == "__main__":
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         # encoding = "utf-8"
         source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
-        source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
+        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
