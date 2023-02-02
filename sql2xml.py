@@ -30,7 +30,7 @@ class Table:
     # Kolekce nalezenych tabulek
     __tables__ = []
 
-    def __init__(self, name=None, name_template=None, alias=None, attributes=None, comment=None, source_sql=None):
+    def __init__(self, name=None, name_template=None, alias=None, attributes=None, conditions=None, comment=None, source_sql=None):
         self.id = Table.__generate_id__()
         if name != None:
             # # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
@@ -46,6 +46,9 @@ class Table:
         self.attributes = []
         if attributes != None:
             self.attributes.extend(attributes)
+        self.conditions = []
+        if conditions != None:
+            self.conditions.extend(conditions)
         if comment != None:
             # Komentar ulozime bez zbytecnych leading/trailing whitespaces
             comment = comment.strip()
@@ -66,9 +69,28 @@ class Table:
         else:
             aliases = "<žádné>"
         if len(self.attributes) > 0:
-            # Textove reprezentace atributu vc. pripadnych podminek, aliasu a komentaru nejprve ulozime do kolekce
+            # Textove reprezentace atributu, aliasu a komentaru nejprve ulozime do kolekce
             attribute_collection = []
             for attr in self.attributes:
+                if attr.alias != None:
+                    alias = f" (alias: {attr.alias})"
+                else:
+                    alias = ""
+                if attr.comment != None and len(attr.comment) > 0:
+                    # Komentar muze byt dlouhy --> v takovem pripade vypiseme pouze jeho zacatek
+                    attr_comment = f"\n{indent}{indent}{indent}Komentář: \"{Table.__trim_to_length__(attr.comment)}\""
+                else:
+                    attr_comment = ""
+                attribute_collection.append(f"{Table.__trim_to_length__(attr.name)}{alias}{attr_comment}")
+            # # Kolekci atributu nebudeme tridit podle abecedy (jednak chceme zachovat poradi atributu a jednak by to zpusobilo problemy v situaci, kdy je vytvarena pomocna tabulka s v kodu natvrdo zadanymi hodnotami)
+            # attribute_collection.sort()
+            attributes = f"\n{indent}{indent}".join(attribute_collection)
+        else:
+            attributes = "<žádné>"
+        if len(self.conditions) > 0:
+            # Zde chceme vypsat podminky z WHERE/ON, takze textove reprezentace budou vc. pripadnych podminek. Postupovat budeme temer stejne jako pri vypisu standardnich atributu.
+            attribute_collection = []
+            for attr in self.conditions:
                 if attr.condition != None:
                     condition = f" {attr.condition}"
                 else:
@@ -83,11 +105,11 @@ class Table:
                 else:
                     attr_comment = ""
                 attribute_collection.append(f"{Table.__trim_to_length__(attr.name)}{condition}{alias}{attr_comment}")
-            # # Kolekci atributu nebudeme tridit podle abecedy (jednak chceme zachovat poradi atributu a jednak by to zpusobilo problemy v situaci, kdy je vytvarena pomocna tabulka s v kodu natvrdo zadanymi hodnotami)
+            # # Ani kolekci podminek nebudeme tridit podle abecedy
             # attribute_collection.sort()
-            attributes = f"\n{indent}{indent}".join(attribute_collection)
+            conditions = f"\n{indent}{indent}".join(attribute_collection)
         else:
-            attributes = "<žádné>"
+            conditions = "<žádné>"
         # Analogicky budeme postupovat u seznamu navazanych tabulek (chceme je mit serazene abecedne podle jmen)
         if len(self.linked_to_tables_id) > 0:
             name_collection = []
@@ -101,7 +123,7 @@ class Table:
             names = "<žádné>"
         comment = Table.__trim_to_length__(self.comment)
         source_sql = Table.__trim_to_length__(self.source_sql)
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
     
     @classmethod
     def __trim_to_length__(cls, text: str) -> str:
@@ -241,27 +263,28 @@ class Table:
     #     except:
     #         return False
 
-    def update_attributes(self, attributes: list) -> None:
-        """Aktualizuje jiz existujici atributy u tabulky podle zadane kolekce. Hledani (case-sensitive!) vzajemne odpovidajicich atributu je provadeno na zaklade jmen a aliasu."""
-        # Kolekce, do ktere budeme ukladat atributy k pridani (urychli prohledavani kolekce jiz existujicich atributu)
-        new_attributes = []
-        for a in attributes:
-            add_attrib = True
-            # Pokud k atributu ze zadane kolekce najdeme jeho ekvivalent v jiz existujicich atributech, upravime jeho parametry podle atribitu ze zadane kolekce
-            for ta in self.attributes:
-                if (a.name == ta.name
-                        or a.name == ta.alias
-                        or a.alias == ta.name
-                        or ((a.alias != None or ta.alias != None) and a.alias == ta.alias)):
-                    ta.condition = a.condition
-                    ta.comment = a.comment
-                    add_attrib = False
-                    break
-            # Jestlize jsme ekvivalentni atribut nenasli, ulozime ten zadany do kolekce s atributy k pridani
-            if add_attrib:
-                new_attributes.append(a)
-        # Nakonec pridame k tabulce vsechny nove atributy
-        self.attributes.extend(new_attributes)
+    # # Metoda byla vyuzivana drive, kdyz byly atributy aktualizovany podle podminek z WHERE/ON. Nyni uz jsou podminky ukladany oddelene a metoda neni potreba.
+    # def update_attributes(self, attributes: list) -> None:
+    #     """Aktualizuje jiz existujici atributy u tabulky podle zadane kolekce. Hledani (case-sensitive!) vzajemne odpovidajicich atributu je provadeno na zaklade jmen a aliasu."""
+    #     # Kolekce, do ktere budeme ukladat atributy k pridani (urychli prohledavani kolekce jiz existujicich atributu)
+    #     new_attributes = []
+    #     for a in attributes:
+    #         add_attrib = True
+    #         # Pokud k atributu ze zadane kolekce najdeme jeho ekvivalent v jiz existujicich atributech, upravime jeho parametry podle atribitu ze zadane kolekce
+    #         for ta in self.attributes:
+    #             if (a.name == ta.name
+    #                     or a.name == ta.alias
+    #                     or a.alias == ta.name
+    #                     or ((a.alias != None or ta.alias != None) and a.alias == ta.alias)):
+    #                 ta.condition = a.condition
+    #                 ta.comment = a.comment
+    #                 add_attrib = False
+    #                 break
+    #         # Jestlize jsme ekvivalentni atribut nenasli, ulozime ten zadany do kolekce s atributy k pridani
+    #         if add_attrib:
+    #             new_attributes.append(a)
+    #     # Nakonec pridame k tabulce vsechny nove atributy
+    #     self.attributes.extend(new_attributes)
 
 
 def is_comment(t: sql.Token) -> bool:
@@ -412,6 +435,8 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         Table.__tables__.append(exists_table)
                         # Nove vytvorenou mezi-tabulku jeste musime svazat s hlavni tabulkou, na kterou tady ale nemame referenci. Pridame proto fiktivni atribut (name == alias == None, condition == "EXISTS_SELECT", comment == ID exists_table), ze ktereho bude patricny udaj v hlavnim kodu extrahovan
                         attributes.append(Attribute(name=None, alias=None, condition="EXISTS_SELECT", comment=str(exists_table.id)))
+                        # Krome ID mezitabulky musime do hlavniho kodu predat take informaci o podmince. Hned jako dalsi atribut tedy pridame jmennou referenci na exists_table vc. pripadneho komentare a tento pak v hlavnim kodu ulozime mezi podminky.
+                        attributes.append(Attribute(name=f"<{exists_table.name}>", alias=None, condition=None, comment=comment_before))
                         # Zavorku nyni zpracujeme jako standardni statement s tim, ze parametrem predame referenci na vytvorenou mezi-tabulku
                         process_statement(token, exists_table)
                         break
@@ -651,11 +676,6 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
     while t != None:
-
-        # DEBUG
-        if "connect_by_root" in t.value:
-            print()
-
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
@@ -735,7 +755,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 sql_components = []
         elif isinstance(t, sql.Where):
             attributes = get_attribute_conditions(t)
-            # Vznikly pri zpracovavani podminek nejake mezi-tabulky pro "EXISTS ..."? Pokud ano, stavajici tabulku musime nyni navazat na vsechny takove tabulky pomoci vracenych fiktivnich atributu (name == alias == None, condition == "EXISTS_SELECT", comment == ID exists_table).
+            # Vznikly pri zpracovavani podminek nejake mezi-tabulky pro "EXISTS ..."? Pokud ano, stavajici tabulku musime nyni navazat na vsechny takove tabulky pomoci vracenych fiktivnich atributu (name == alias == None, condition == "EXISTS_SELECT", comment == ID exists_table), ktere jsou pak vzdy jednotlive nasledovany atributem se jmennou referenci (a pripadnym komentarem) k dane mezi-tabulce.
             j = 0
             while j < len(attributes):
                 attribute = attributes[j]
@@ -745,8 +765,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         and attribute.comment != None):
                     table.link_to_table_id(int(attribute.comment))
                     attributes.pop(j)
-                else:
-                    j += 1
+                # Index muzeme zvysit bez ohledu na podminku vyse, jelikoz pripadny fiktivni atribut je vzdy nasledovan jednim standardnim atributem se jmennou referenci na odpovidajici mezi-tabulku
+                j += 1
             # Pokud jsme pri nacitani atributu nasli jako posledni sub-token komentar, jde temer jiste o komentar k nasledujicimu bloku SQL kodu. Fiktivni atribut s nesmyslnymi parametry (name == alias == None, condition == "COMMENT", comment != None) nyni komentar ziskame zpet a aktualizujeme pomoci nej comment_before.
             if len(attributes) > 0:
                 last_attribute = attributes[-1]
@@ -758,9 +778,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     attributes.pop()
             # Nyni muzeme aktualizovat atributy u patricne tabulky (union_table, resp. table -- dle situace)
             if union_table != None:
-                union_table.update_attributes(attributes)
+                union_table.conditions.extend(attributes)
             else:
-                table.update_attributes(attributes)
+                table.conditions.extend(attributes)
         elif not t.ttype == sql.T.Punctuation:
             # Jakykoliv jiny token (tedy pokud nejde o Punctuation) zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before).
             # Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je is_within == None, tzn. process_token(...) vrati None.
@@ -770,7 +790,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 if isinstance(obj, list) and isinstance(obj[0], Attribute):
                     # Ziskali jsme seznam atributu
                     if is_within == "on":
-                        # Zkontrolujeme, zda mezi podminkami nebylo "EXISTS ( SELECT ... )", a pripadne aktualizujeme zavilosti u join_table
+                        # Zkontrolujeme, zda mezi podminkami nebylo "EXISTS ( SELECT ... )", a pripadne aktualizujeme zavilosti a podminky u join_table
                         j = 0
                         while j < len(obj):
                             attribute = obj[j]
@@ -780,8 +800,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     and attribute.comment != None):
                                 join_table.link_to_table_id(int(attribute.comment))
                                 obj.pop(j)
-                            else:
-                                j += 1
+                            # Index muzeme zvysit bez ohledu na podminku vyse, jelikoz pripadny fiktivni atribut je vzdy nasledovan jednim standardnim atributem se jmennou referenci na odpovidajici mezi-tabulku
+                            j += 1
                         # Pokud jsme pri nacitani atributu v "JOIN ... ON ..."" nasli jako posledni sub-token komentar, jde o komentar k mezi-tabulce reprezentujici JOIN. Do seznamu atributu byl v takovem pripade jako posledni pridat fiktivni atribut s nesmyslnymi parametry (name == alias == None, condition == "COMMENT", comment != None), ze ktereho nyni komentar ziskame zpet a priradime ho k dane tabulce.
                         if len(obj) > 0:
                             last_attribute = obj[-1]
@@ -792,7 +812,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 join_table.comment = last_attribute.comment
                                 obj.pop()
                         # Vraceny objekt (nyni uz bez pripadneho fiktivniho atributu s komentarem) muzeme pouzit k aktualizaci atributu i mezitabulky reprezentujici JOIN
-                        join_table.update_attributes(obj)
+                        join_table.conditions.extend(obj)
 
                         # TODO: mozna updatovat attributy v OBOU tabulkach z JOIN? (pozor: nelze podle LHS/RHS -- bylo by potreba delat podle referenci na tabulky v nazvech atributu)
                         
@@ -849,7 +869,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT. Atributy u tabulky proto na zaklade jejich poradi aktualizujeme podle objektu vraceneho vyse metodou process_token(...).
                         for j in range(len(table.attributes)):
                             table.attributes[j].name = obj[j].name
-                            table.attributes[j].condition = obj[j].condition  # TODO: mozna neni potreba? (attrib conditions jsou nastavovany pouze v pripade JOIN)
+                            # table.attributes[j].condition = obj[j].condition  # Uz neni potreba (bylo vyuzivano drive, kdyz byly pripadne podminky ukladany primo mezi atributy)
                             table.attributes[j].comment = obj[j].comment
                         # nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
                         for j in range(len(table.attributes), len(obj)):
@@ -956,7 +976,7 @@ if __name__ == "__main__":
         encoding = str(sys.argv[2])
     else:
         # # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
-        # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8 apod.)\n")
+        # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8, utf-8-sig apod.)\n")
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
@@ -973,11 +993,11 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
-        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        encoding = "utf-8-sig"
+        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
+        # encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
-        # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
-        # encoding = "ansi"
+        source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
+        encoding = "ansi"
 
     exit_code = 0
     f = None
