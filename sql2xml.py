@@ -6,6 +6,7 @@ from typing import Any
 import sys
 import os
 import traceback
+import gzip
 
 
 class Attribute:
@@ -14,9 +15,16 @@ class Attribute:
         self.name = name
         self.alias = alias
         self.condition = condition
-        if comment != None:
-            comment = comment.strip()
-        self.comment = comment
+        self.set_comment(comment)
+
+    def set_comment(self, comment: str) -> None:
+        """Nastavi konetar u atributu"""
+        if comment == None or len(comment) == 0:
+            self.comment = None
+            return
+        # .lstrip(...) odstrani vsechny uvodni pomlcky a mezery (u viceradkoveho komentare s /* a */ tyto znaky ponechame). Zaroven odstranime i zbytecne bile znaky.
+        self.comment = comment.strip().lstrip("- ")
+        
 
 
 class Table:
@@ -27,10 +35,14 @@ class Table:
     __next_template_num__ = {}
     # # Vychozi schema uvazovane pri ukladani celych jmen tabulek
     # __default_schema__ = "st01"
+    # Typy tabulek (nutne pro pozdejsi barevne odliseni v generovanem schematu/.dia)
+    STANDARD_TABLE = 0
+    WITH_TABLE = 1
+    AUX_TABLE = 2
     # Kolekce nalezenych tabulek
     __tables__ = []
 
-    def __init__(self, name=None, name_template=None, alias=None, attributes=None, conditions=None, comment=None, source_sql=None):
+    def __init__(self, name=None, name_template=None, alias=None, attributes=None, conditions=None, comment=None, source_sql=None, table_type=None):
         self.id = Table.__generate_id__()
         if name != None:
             # # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
@@ -49,21 +61,24 @@ class Table:
         self.conditions = []
         if conditions != None:
             self.conditions.extend(conditions)
-        if comment != None:
-            # Komentar ulozime bez zbytecnych leading/trailing whitespaces
-            comment = comment.strip()
-        self.comment = comment
+        self.set_comment(comment)
         if source_sql != None:
             # SQL kod taktez ulozime bez leading/trailing whitespaces
             source_sql = source_sql.strip()
         self.source_sql = source_sql
+        if (table_type == None
+                or (table_type != Table.STANDARD_TABLE
+                and table_type != Table.WITH_TABLE
+                and table_type != Table.AUX_TABLE)):
+            table_type = Table.STANDARD_TABLE
+        self.table_type = table_type
         self.linked_to_tables_id = []
 
     def __str__(self) -> str:
         # Odsazeni pouzivane pri vypisu tabulek
         indent = "    "
         if len(self.aliases) > 0:
-            # Aliasychceme mit serazene podle abecedy
+            # Aliasy chceme mit serazene podle abecedy
             self.aliases.sort()
             aliases = f"\n{indent}{indent}".join(self.aliases)
         else:
@@ -125,14 +140,23 @@ class Table:
         source_sql = Table.__trim_to_length__(self.source_sql)
         return f"TABULKA {self.name} (ID {self.id})\n{indent}Aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
     
+    def set_comment(self, comment: str) -> None:
+        """Nastavi komentar u tabulky"""
+        if comment == None or len(comment) == 0:
+            self.comment = None
+            return
+        # .lstrip(...) odstrani vsechny uvodni pomlcky a mezery (u viceradkoveho komentare s /* a */ tyto znaky ponechame). Zaroven odstranime i zbytecne bile znaky.
+        self.comment = comment.strip().lstrip("- ")
+    
     @classmethod
-    def __trim_to_length__(cls, text: str) -> str:
+    def __trim_to_length__(cls, text: str, max_snippet_length=None) -> str:
         """Zkrati zadany text na max_snippet_length == 50 znaku, prip. vrati puvodni text, pokud byl kratsi. Veskera zalomeni radku, vicenasobne bile znaky apod. jsou zaroven nahrazeny jednotlivymi mezerami."""
         # Potreba v situaci, kdy napr. komentar k tabulce/atributu je None
         if text == None:
             return ""
         text = " ".join(text.split())
-        max_snippet_length = 50
+        if max_snippet_length == None:
+            max_snippet_length = 50
         if len(text) < max_snippet_length:
             return text
         else:
@@ -421,7 +445,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     return attributes
                 if len(attributes) > 0:
                     # Jde o komentar k poslednimu nalezenemu atributu
-                    attributes[-1].comment = token.value.strip()
+                    attributes[-1].set_comment(token.value.strip())
             elif token.ttype == sql.T.Keyword and token.normalized == "EXISTS":
                 # Typicky pripad: "JOIN ... ON ( attr = value AND EXISTS ( ... ) AND ... )" --> postupujeme identicky situaci WHERE EXISTS
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
@@ -431,7 +455,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         comment_before = token.value.strip()
                     elif isinstance(token, sql.Parenthesis):
                         # Nasli jsme zavorku se SELECT, k cemuz je nutne vytvorit patricnou mezi-tabulku
-                        exists_table = Table(name_template="exists-select", comment=comment_before)
+                        exists_table = Table(name_template="exists-select", comment=comment_before, table_type=Table.AUX_TABLE)
                         Table.__tables__.append(exists_table)
                         # Nove vytvorenou mezi-tabulku jeste musime svazat s hlavni tabulkou, na kterou tady ale nemame referenci. Pridame proto fiktivni atribut (name == alias == None, condition == "EXISTS_SELECT", comment == ID exists_table), ze ktereho bude patricny udaj v hlavnim kodu extrahovan
                         attributes.append(Attribute(name=None, alias=None, condition="EXISTS_SELECT", comment=str(exists_table.id)))
@@ -511,7 +535,7 @@ def process_with_element(t, comment_before="") -> str:
             comment_after = last_token.value.strip()
         else:
             comment_after = ""
-        table = Table(name=name, comment=comment_before, source_sql=t.value)
+        table = Table(name=name, comment=comment_before, source_sql=t.value, table_type=Table.WITH_TABLE)
         Table.__tables__.append(table)
         if len(aliases) > 0:
             # Zname uz aliasy atributu (byly v zavorce za nazvem tabulky), ale nic vic k atributum tabulky nevime. Pouze tedy nastavime parametr, na zaklade ktereho pak v hlavni casti kodu (process_statement(...)) budou k atributum doplneny zbyle udaje. Jmena atributu budou pro poradek (at nejsou None) docasne "TBD".
@@ -542,7 +566,7 @@ def process_identifier_or_function(t) -> list:
         # Nejprve tedy musime zjistit, co konkretne vlastne nyni je v aktualnim tokenu. Toto udelame naprosto "tupe" prostym porovnanim zacatku leading_portion se "select" (melo by snad stacit).
         if leading_portion.startswith("select"):
             # Vytvorime mezi-tabulku, u ktere jako komentar nastavime ten vyse zjisteny, a aktualizujeme jmeno atributu podle jmena tabulky
-            table = Table(name_template="select", comment=comment)
+            table = Table(name_template="select", comment=comment, table_type=Table.AUX_TABLE)
             Table.__tables__.append(table)
             # Sub-token se SELECT je hned jako prvni, neni potreba hledat ho iterovanim pres token.tokens
             process_statement(t.tokens[0], table)
@@ -560,7 +584,7 @@ def process_token(t, is_within=None, comment_before="") -> Any:
         # Token je v kontextu lib. mutace SELECT (std., UNION SELECT, ...). Pokud je token typu Parenthesis, je potreba vytvorit odpovidajici (mezi-)tabulku a zavorku pak zpracovat jako samostatny SQL statement. Do process_statement(...) pritom musime predat odkaz na novou tabulku, aby bylo mozne spravne priradit nalezene atributy atd. Krome toho muze token reprezentovat i "( SELECT ...) AS ..." nebo "( CASE ... ) AS ..." ve vyctu atributu.
         if isinstance(t, sql.Parenthesis):
             # Zde resime UNION SELECT nebo "SELECT ... FROM ( SELECT ... )"; nemuze jit o "( SELECT ...) AS ..." nebo "( CASE ... ) AS ..." ve vyctu atributu, protoze tam musi byt alias (a takovy token tedy je typu Identifier[List])
-            table = Table(name_template=is_within, comment=comment_before)
+            table = Table(name_template=is_within, comment=comment_before, table_type=Table.AUX_TABLE)
             Table.__tables__.append(table)
             process_statement(t, table)
             return table
@@ -594,6 +618,7 @@ def process_token(t, is_within=None, comment_before="") -> Any:
         # Nakonec jeste condition na "SPLIT_ATTRIBUTE" a comment na patricny spojovaci retezec, pokud je posledni atribut nekompletni
         if split_attr_link != None:
             attributes[-1].condition = "SPLIT_ATTRIBUTE"
+            # U fiktivniho atributu musime komentar s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set_comment(...)!
             attributes[-1].comment = split_attr_link
         return attributes
     if is_within == "from" or is_within == "join":
@@ -601,14 +626,14 @@ def process_token(t, is_within=None, comment_before="") -> Any:
         # Zde navic mohou nastat dva pripady: bud je za zavorkou alias a/nebo komentar (--> jako statement zpracujeme t.tokens[0]), nebo je v SQL kodu pouze zavorka (--> jako statement zpracujeme cely token).
         if isinstance(t, sql.Parenthesis):
             # Pripadny komentar by byl az za zavorkou, tzn. comment_before muzeme ignorovat
-            table = Table(name_template="select")
+            table = Table(name_template="select", table_type=Table.AUX_TABLE)
             Table.__tables__.append(table)
             process_statement(t, table)
             return table
         if isinstance(t.tokens[0], sql.Parenthesis):
             # Struktura t.tokens: parenthesis-SELECT [ whitespace(s) [AS whitespace(s) ] alias [ whitespace(s) komentar ] ]
             # V zavorce je vzdy SELECT, takze je potreba vytvorit odpovidajici (mezi-)tabulku (sablona == "select")
-            table = Table(name_template="select")
+            table = Table(name_template="select", table_type=Table.AUX_TABLE)
             Table.__tables__.append(table)
             # Prvni sub-token (t.tokens[0]) i vsechno ostatni az po pripadny alias ci komentar zatim preskocime.
             i = 1
@@ -627,7 +652,7 @@ def process_token(t, is_within=None, comment_before="") -> Any:
             last_token = t.tokens[-1]
             if (is_comment(last_token)
                     and (table.comment == None or len(table.comment) == 0)):
-                table.comment = last_token.value.strip()
+                table.set_comment(last_token.value)
             # Uplne nakonec pak zpracujeme prvni subtoken (t.tokens[0]) jako samostatny statement a odkaz na vytvorenou tabulku predame parametrem
             process_statement(t.tokens[0], table)
             return table
@@ -704,6 +729,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
                 split_attribute = table.attributes[-1]
+                # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
                 split_attribute.comment = " OVER "
                 # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
                 token_counter -= 2
@@ -743,14 +769,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
             if is_within == "union-select":
                 # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), budou odpovidajici tokeny vraceny sqlparse postupne a tudiz musime uz zde vytvorit patricnou mezi-tabulku. Jinak receno, k situaci je nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
-                union_table = Table(name_template="union-select", comment=comment_before)
+                union_table = Table(name_template="union-select", comment=comment_before, table_type=Table.AUX_TABLE)
                 Table.__tables__.append(union_table)
                 union_components = []
             else:
                 is_within = "select"
                 # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
                 if table == None:
-                    table = Table(name_template="select", comment=comment_before)
+                    table = Table(name_template="select", comment=comment_before, table_type=Table.AUX_TABLE)
                     Table.__tables__.append(table)
                 sql_components = []
         elif isinstance(t, sql.Where):
@@ -809,7 +835,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     and last_attribute.alias == None
                                     and last_attribute.condition == "COMMENT"
                                     and last_attribute.comment != None):
-                                join_table.comment = last_attribute.comment
+                                join_table.set_comment(last_attribute.comment)
                                 obj.pop()
                         # Vraceny objekt (nyni uz bez pripadneho fiktivniho atributu s komentarem) muzeme pouzit k aktualizaci atributu i mezitabulky reprezentujici JOIN
                         join_table.conditions.extend(obj)
@@ -848,11 +874,13 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             attr_link = split_attribute.comment.split()
                             if not attr_remainder.name.startswith("(") and len(attr_link) > 1:
                                 attr_link.pop()
+                                # Komentar musime nastavit primo (mezery!), nikoliv pomoci set-comment(...)
                                 split_attribute.comment = " " + " ".join(attr_link) + " "
                             split_attribute.name = f"{split_attribute.name}{split_attribute.comment}{attr_remainder.name}"
                             split_attribute.alias = attr_remainder.alias
                             split_attribute.condition = attr_remainder.condition
-                            split_attribute.comment = attr_remainder.comment
+                            # Tady by nejspis take slo vzit komentar tak, jak je, ale pro poradek vyuzijeme set_comment(...)
+                            split_attribute.set_comment(attr_remainder.comment)
                             table.attributes.append(split_attribute)
                             if len(obj) > 0 and obj[-1].condition == "SPLIT_ATTRIBUTE":
                                 split_attribute = obj.pop()
@@ -860,20 +888,23 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 token_counter -= 1
                             else:
                                 split_attribute = None
-                        # Nakonec k tabulce pridame atributy zbyle v obj
+                        # Nakonec k tabulce pridame atributy zbyle v obj (musime ale zohlednit pripadnou znalost aliasu!)
+                        if known_attribute_aliases:
+                            # Zde resime blok ve WITH, u ktereho byly za nazvem docasne tabulky uvedeny aliasy (alespon nekterych) atributu. Nejprve tedy zkontrolujeme, zda pocet atributu v kompletnim seznamu >= poctu aliasu uvedenych drive v zavorce za jmenem tabulky. pokud tomu tak neni, je s SQL kodem neco spatne.
+                            if len(obj) < len(table.attributes):
+                                raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
+                            # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT. Atributy u tabulky proto na zaklade jejich poradi aktualizujeme podle objektu vraceneho vyse metodou process_token(...).
+                            for j in range(len(table.attributes)):
+                                attr = obj.pop(0)
+                                table.attributes[j].name = attr.name
+                                # Neni nahodou drive zjisteny alias identicky s tim, co bylo v SELECT? Pokud ano, alias odstranime. Alias zde nemuze byt None (drive byl atribut ve tvaru name == "TBD" + s nastavenym aliasem), takze jmeno a alias muzeme porovnavat bez jakekoliv dalsi kontroly.
+                                if table.attributes[j].name.lower() == table.attributes[j].alias:
+                                    table.attributes[j].alias = None
+                                # table.attributes[j].condition = attr.condition  # Uz neni potreba (bylo vyuzivano drive, kdyz byly pripadne podminky ukladany primo mezi atributy).
+                                # Komentar muzeme aktualizovat primo (bez vyuziti set_comment(...))
+                                table.attributes[j].comment = attr.comment
+                        # Nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
                         table.attributes.extend(obj)
-                    elif known_attribute_aliases:
-                        # Zde resime blok ve WITH, u ktereho byly za nazvem docasne tabulky uvedeny aliasy (alespon nekterych) atributu. Nejprve tedy zkontrolujeme, zda pocet atributu v kompletnim seznamu >= poctu aliasu uvedenych drive v zavorce za jmenem tabulky. pokud tomu tak neni, je s SQL kodem neco spatne.
-                        if len(obj) < len(table.attributes):
-                            raise(f"Počet aliasů atributů v tabulce {table.name} je větší než počet hodnot vracených příkazem SELECT")
-                        # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT. Atributy u tabulky proto na zaklade jejich poradi aktualizujeme podle objektu vraceneho vyse metodou process_token(...).
-                        for j in range(len(table.attributes)):
-                            table.attributes[j].name = obj[j].name
-                            # table.attributes[j].condition = obj[j].condition  # Uz neni potreba (bylo vyuzivano drive, kdyz byly pripadne podminky ukladany primo mezi atributy)
-                            table.attributes[j].comment = obj[j].comment
-                        # nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
-                        for j in range(len(table.attributes), len(obj)):
-                            table.attributes.append(obj[j])
                     else:
                         # Ve zbylych situacich staci pridat nalezene atributy k aktualni tabulce (ktera uz u korektniho SQL kodu nyni nemuze byt None)
                         table.attributes.extend(obj)
@@ -889,10 +920,11 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         src_table.add_alias(obj[1])
                         # Komentar pridame jen v pripade, ze tento zatim neni nastaveny (prvotni komentar zpravidla byva detailnejsi a nedava smysl ho prepsat necim dost mozna kratsim/strucnejsim)
                         if src_table.comment == None or len(src_table.comment) == 0:
-                            src_table.comment = obj[2]
+                            # Komentar by asi slo vzit primo, ale pro poradek vyuzijeme set_comment(...)
+                            src_table.set_comment(obj[2])
                     if is_within == "join":
                         # Pokud resime JOIN, vytvorime patricnou mezi-tabulku (zatim neexistuje!), ke ktere budou nasledne pridany atributy s podminkami dle ON
-                        join_table = Table(name_template="join")
+                        join_table = Table(name_template="join", table_type=Table.AUX_TABLE)
                         Table.__tables__.append(join_table)
                         # Navic je nutne nastavit zavislosti tabulek: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
@@ -907,7 +939,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 elif isinstance(obj, Table):
                     # Metoda process_token(...) vratila objekt typu Table. Toto muze nastat ve dvou pripadech: bud resime JOIN (k cemuz musime vytvorit mezi-tabulku a nastavit odpovidajici zavislosti), nebo jde o situaci "SELECT ... FROM ( SELECT ... )" (kde uz mezi-tabulka byla vytvorena -- jde o tu vracenou -- a pouze nastavime zavislost aktualni tabulky na mezi-tabulce).
                     if is_within == "join":
-                        join_table = Table(name_template="join")
+                        join_table = Table(name_template="join", table_type=Table.AUX_TABLE)
                         Table.__tables__.append(join_table)
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
@@ -969,6 +1001,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         table.source_sql = "\n".join(sql_components).strip()
 
 
+def text_to_dia(text: str) -> str:
+    """Vrati text ve tvaru vhodnem pro vlozeni do .dia"""
+    if text != None and len(text) > 0:
+        # Nejprve nahradime bile znaky (ci jejich posloupnosti) mezerami
+        text = " ".join(text.split())
+        return text.replace("<", "&lt;").replace(">", "&gt;")
+    return ""
+
+
 if __name__ == "__main__":
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
     if len(sys.argv) > 2:
@@ -981,11 +1022,11 @@ if __name__ == "__main__":
 
         # DEBUG
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        # encoding = "utf-8"
+        encoding = "utf-8"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
@@ -996,11 +1037,13 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
         # encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
-        source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
-        encoding = "ansi"
+        # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
+        # encoding = "ansi"
 
     exit_code = 0
-    f = None
+    fTxt = None
+    fDia = None
+    fNamePrefix = source_sql[:-4]
     try:
         print()
         with open(source_sql, mode="r", encoding=encoding) as file:
@@ -1013,8 +1056,8 @@ if __name__ == "__main__":
         # formatted_sql = f"\nPŘEFORMÁTOVANÝ DOTAZ (bez komentářů):\n-------------------------------------\n{format(query, encoding=encoding, reindent=True, keyword_case='upper', strip_comments=True)}\n-------------------------------------\n"
         # print(formatted_sql)
         # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
-        # f = open(source_sql[:-4] + "__vystup.txt", "w")
-        # f.write(formatted_sql + "\n")
+        # fTxt = open(fNamePrefix + "__vystup.txt", "w")
+        # fTxt.write(formatted_sql + "\n")
 
         # # KOD K BUG REPORTU ( https://github.com/andialbrecht/sqlparse/issues/700 )
         # statement = parse("SELECT LISTAGG(attr,', ') WITHIN GROUP(ORDER BY attr) as column FROM table")
@@ -1048,6 +1091,10 @@ if __name__ == "__main__":
         for s in statements:
             process_statement(s)
 
+        if len(Table.__tables__) == 0:
+            raise Exception("Ve zdrojovem SQL souboru nebyla nalezena žádná tabulka")
+
+        # Vypiseme textovou reprezentaci tabulek
         for table in Table.__tables__:
             # Potlacime vypis tabulek, ktere nejsou docasne (= existuji v DB a jsou tedy referencovany stylem schema.tabulka)
             if "." in table.name:
@@ -1055,11 +1102,406 @@ if __name__ == "__main__":
             output = f"{table}\n"
             print(output)
             # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
-            # f.write(output + "\n")
+            # fTxt.write(output + "\n")
+        
+        # # Bloky a vazby mezi nimi ulozime v XML formatu kompatibilnim s aplikaci Dia ( https://wiki.gnome.org/Apps/Dia )
+        header = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                  "<dia:diagram xmlns:dia=\"http://www.lysator.liu.se/~alla/dia/\">\n"
+                  "  <dia:diagramdata>\n"
+                  "    <dia:attribute name=\"background\">\n"
+                  "      <dia:color val=\"#ffffff\"/>\n"
+                  "    </dia:attribute>\n"
+                  "    <dia:attribute name=\"pagebreak\">\n"
+                  "      <dia:color val=\"#000099\"/>\n"
+                  "    </dia:attribute>\n"
+                  "    <dia:attribute name=\"paper\">\n"
+                  "      <dia:composite type=\"paper\">\n"
+                  "        <dia:attribute name=\"name\">\n"
+                  "          <dia:string>#A4#</dia:string>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"tmargin\">\n"
+                  "          <dia:real val=\"2.50\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"bmargin\">\n"
+                  "          <dia:real val=\"2.50\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"lmargin\">\n"
+                  "          <dia:real val=\"2.50\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"rmargin\">\n"
+                  "          <dia:real val=\"2.50\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"is_portrait\">\n"
+                  "          <dia:boolean val=\"true\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"scaling\">\n"
+                  "          <dia:real val=\"1\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"fitto\">\n"
+                  "          <dia:boolean val=\"false\"/>\n"
+                  "        </dia:attribute>\n"
+                  "      </dia:composite>\n"
+                  "    </dia:attribute>\n"
+                  "    <dia:attribute name=\"grid\">\n"
+                  "      <dia:composite type=\"grid\">\n"
+                  "        <dia:attribute name=\"width_x\">\n"
+                  "          <dia:real val=\"1\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"width_y\">\n"
+                  "          <dia:real val=\"1\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"visible_x\">\n"
+                  "          <dia:int val=\"1\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:attribute name=\"visible_y\">\n"
+                  "          <dia:int val=\"1\"/>\n"
+                  "        </dia:attribute>\n"
+                  "        <dia:composite type=\"color\"/>\n"
+                  "      </dia:composite>\n"
+                  "    </dia:attribute>\n"
+                  "    <dia:attribute name=\"color\">\n"
+                  "      <dia:color val=\"#d8e5e5\"/>\n"
+                  "    </dia:attribute>\n"
+                  "    <dia:attribute name=\"guides\">\n"
+                  "      <dia:composite type=\"guides\">\n"
+                  "        <dia:attribute name=\"hguides\"/>\n"
+                  "        <dia:attribute name=\"vguides\"/>\n"
+                  "      </dia:composite>\n"
+                  "    </dia:attribute>\n"
+                  "  </dia:diagramdata>\n"
+                  "  <dia:layer name=\"Background\" visible=\"true\" active=\"true\">\n")
+        footer = ("  </dia:layer>\n"
+                  "</dia:diagram>\n")
+        # Text je zobrazen vzdy cerne, ale samotne tabulky jsou barevne odlisene podle druhu (barvy zvoleny vicemene nahodne, ale tak, aby nepusobily potize lidem s poruchami barvocitu)
+        # Barva beznych tabulek (Table.STANDARD_TABLE)
+        std_fg_color = "808080"
+        std_bg_color = "EEEEEE"
+        # Barva tabulek ve WITH (Table.WITH_TABLE)
+        with_fg_color = "A8A856"
+        with_bg_color = "E0E072"
+        # Barva mezi-tabulek (Table.AUX_TABLE)
+        aux_fg_color = "A0A0B9"
+        aux_bg_color = "D4D4E8"
+        fDia = gzip.open(filename=fNamePrefix+".dia", mode="wb", compresslevel=9)
+        fDia.write(bytes(header, "UTF-8"))
+        # Okraj uvazovany pri vypoctu bounding boxu (== polovina line_width v kodu nize, coz staci mit napevno)
+        bb = 0.05
+        # Bloky budeme rozmistovat do matice s max. poctem bloku na jednom "radku" n_blocks_h, pricemz bloky nejvice vlevo budou na horiz. pozici x0
+        n_blocks_h = 10
+        x0 = bb
+        # Pozice nasledujiciho bloku
+        x = x0
+        y = bb
+        # Rozmery bloku
+        w = 10
+        h = 4
+        # Horiz./vert. posuny pro umistovani propojeni bloku (blok nemusi byt s ohledem na uvedeny text po otevreni siroky "w" + sipka vede z/do mista v polovine zahlavi s nazvem)
+        dw = 0.3 * w
+        dh = 0.1 * h
+        # Posun dvou bloku vuci sobe (horiz./vert.)
+        dx = w + 3
+        dy = h + 3
+        # Index nasl. bloku pouzivany pri rozmistovani na "radku"
+        i = 0
+        # Nyni muzeme zacit "sazet" bloky na (jedinou) vrstvu v diagramu. Kod bloku budeme skladat postupne jako kolekci (aby slo snadno pouzivat f-strings) a az nakonec vse sloucime a zapiseme do souboru. Propojeni bloku pridame az pote, co budou veskere bloky v XML (k tomu si budeme do block_pos ukladat ID tabulek a jim odpovidajici pozice bloku).
+        block_pos = {}
+        for table in Table.__tables__:
+            block_pos[table.id] = (x, y)
+            code = []
+            code.append(f"    <dia:object type=\"UML - Class\" version=\"0\" id=\"O{table.id}\">\n")
+            code.append( "      <dia:attribute name=\"obj_pos\">\n")
+            code.append(f"        <dia:point val=\"{x},{y}\"/>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"obj_bb\">\n"))
+            code.append(f"        <dia:rectangle val=\"{x - bb},{y - bb};{x + w + bb},{y + h + bb}\"/>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"elem_corner\">\n"))
+            code.append(f"        <dia:point val=\"{x},{y}\"/>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"elem_width\">\n"))
+            code.append(f"        <dia:real val=\"{w}\"/>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"elem_height\">\n"))
+            code.append(f"        <dia:real val=\"{h}\"/>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"name\">\n"))
+            if len(table.aliases) > 0:
+                # Aliasy chceme mit serazene podle abecedy
+                table.aliases.sort()
+                aliases = f", ".join(table.aliases)
+                code.append(f"        <dia:string>#{table.name} :: {aliases}#</dia:string>\n")
+            else:
+                code.append(f"        <dia:string>#{table.name}#</dia:string>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"stereotype\">\n"
+                         "        <dia:string>##</dia:string>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"comment\">\n"))
+            code.append(f"        <dia:string>#{text_to_dia(table.comment)}#</dia:string>\n")
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"abstract\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"suppress_attributes\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"suppress_operations\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"visible_attributes\">\n"
+                         "        <dia:boolean val=\"true\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"visible_operations\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"visible_comments\">\n"
+                         "        <dia:boolean val=\"true\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"wrap_operations\">\n"
+                         "        <dia:boolean val=\"true\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"wrap_after_char\">\n"
+                         "        <dia:int val=\"30\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"comment_line_length\">\n"
+                         "        <dia:int val=\"50\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"comment_tagging\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"line_width\">\n"
+                         "        <dia:real val=\"0.10\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"line_color\">\n"))
+            if table.table_type == Table.WITH_TABLE:
+                fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
+                bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            elif table.table_type == Table.AUX_TABLE:
+                fg_color = f"        <dia:color val=\"#{aux_fg_color}\"/>\n"
+                bg_color = f"        <dia:color val=\"#{aux_bg_color}\"/>\n"
+            else:
+                fg_color = f"        <dia:color val=\"#{std_fg_color}\"/>\n"
+                bg_color = f"        <dia:color val=\"#{std_bg_color}\"/>\n"
+            code.append(fg_color)
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"fill_color\">\n"))
+            code.append(bg_color)
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"text_color\">\n"
+                         "        <dia:color val=\"#000000\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"normal_font\">\n"
+                         "        <dia:font family=\"monospace\" style=\"0\" name=\"Courier\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"abstract_font\">\n"
+                         "        <dia:font family=\"monospace\" style=\"0\" name=\"Courier\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"polymorphic_font\">\n"
+                         "        <dia:font family=\"monospace\" style=\"0\" name=\"Courier\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"classname_font\">\n"
+                         "        <dia:font family=\"sans\" style=\"80\" name=\"Helvetica-Bold\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"abstract_classname_font\">\n"
+                         "        <dia:font family=\"sans\" style=\"0\" name=\"Helvetica\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"comment_font\">\n"
+                         "        <dia:font family=\"sans\" style=\"4\" name=\"Helvetica\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"normal_font_height\">\n"
+                         "        <dia:real val=\"0.80\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"polymorphic_font_height\">\n"
+                         "        <dia:real val=\"0.80\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"abstract_font_height\">\n"
+                         "        <dia:real val=\"0.80\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"classname_font_height\">\n"
+                         "        <dia:real val=\"1\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"abstract_classname_font_height\">\n"
+                         "        <dia:real val=\"1\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"comment_font_height\">\n"
+                         "        <dia:real val=\"0.70\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"attributes\">\n"))
+            if len(table.attributes) > 0:
+                for attr in table.attributes:
+                    code.append(("        <dia:composite type=\"umlattribute\">\n"
+                                 "          <dia:attribute name=\"name\">\n"))
+                    name = text_to_dia(Table.__trim_to_length__(attr.name))
+                    if attr.alias != None:
+                        code.append(f"            <dia:string>#{name} :: {attr.alias}#</dia:string>\n")
+                    else:
+                        code.append(f"            <dia:string>#{name}#</dia:string>\n")
+                    code.append(("          </dia:attribute>\n"
+                                 "          <dia:attribute name=\"type\">\n"
+                                 "            <dia:string>##</dia:string>\n"
+                                 "          </dia:attribute>\n"
+                                 "          <dia:attribute name=\"value\">\n"
+                                 "            <dia:string>##</dia:string>\n"
+                                 "          </dia:attribute>\n"))
+                    code.append( "          <dia:attribute name=\"comment\">\n")
+                    code.append(f"            <dia:string>#{text_to_dia(attr.comment)}#</dia:string>\n")
+                    code.append(("          </dia:attribute>\n"
+                                 "          <dia:attribute name=\"visibility\">\n"
+                                 "            <dia:enum val=\"3\"/>\n"
+                                 "          </dia:attribute>\n"
+                                 "          <dia:attribute name=\"abstract\">\n"
+                                 "            <dia:boolean val=\"false\"/>\n"
+                                 "          </dia:attribute>\n"
+                                 "          <dia:attribute name=\"class_scope\">\n"
+                                 "            <dia:boolean val=\"false\"/>\n"
+                                 "          </dia:attribute>\n"
+                                 "        </dia:composite>\n"))
+            else:
+                code.append(("        <dia:composite type=\"umlattribute\">\n"
+                             "          <dia:attribute name=\"name\">\n"
+                             "            <dia:string>#&lt;bez expl. atributů&gt;#</dia:string>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"type\">\n"
+                             "            <dia:string>##</dia:string>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"value\">\n"
+                             "            <dia:string>##</dia:string>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"comment\">\n"
+                             "            <dia:string>##</dia:string>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"visibility\">\n"
+                             "            <dia:enum val=\"3\"/>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"abstract\">\n"
+                             "            <dia:boolean val=\"false\"/>\n"
+                             "          </dia:attribute>\n"
+                             "          <dia:attribute name=\"class_scope\">\n"
+                             "            <dia:boolean val=\"false\"/>\n"
+                             "          </dia:attribute>\n"
+                             "        </dia:composite>\n"))
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"operations\"/>\n"
+                         "      <dia:attribute name=\"template\">\n"
+                         "        <dia:boolean val=\"false\"/>\n"
+                         "      </dia:attribute>\n"
+                         "      <dia:attribute name=\"templates\"/>\n"
+                         "    </dia:object>\n"))
+            # Blok zapiseme do vystupniho souboru
+            fDia.write(bytes("".join(code), "UTF-8"))
+            # Nakonec aktualizujeme souradnice nasledujiciho bloku tak, aby bloky byly rozmisteny v matici o pozadovanem poctu sloupcu
+            i += 1
+            if i < n_blocks_h:
+                x += dx
+            else:
+                i = 0
+                x = x0
+                y += dy
+        
+        # Zjistime posledni ID "tabulkoveho" bloku, abychom mohli nyni generovat ID objektu reprezentujicich propojeni (pro vetsi prehlednost diagramu budeme pouzivat obycejna/non-UML propojeni namisto zalomenych)
+        link_obj_id = Table.__tables__[-1].id
+        # Ted muzeme pridat propojeni bloku (souradnice budeme dopocitavat na zaklade pozic bloku)
+        for table in Table.__tables__:
+            # Je tabulka navazana na alespon jednu jinou tabulkou?
+            if len(table.linked_to_tables_id) > 0:
+                # Pozice akt. tabulky
+                (bx, by) = block_pos[table.id]
+                for id in table.linked_to_tables_id:
+                    # Pozice navazane (zdrojove) tabulky
+                    (sx, sy) = block_pos[id]
+                    # Nachystame si ID objektu a muzeme zacit generovat kod
+                    link_obj_id += 1
+                    code = []
+                    code.append(f"    <dia:object type=\"Standard - Line\" version=\"0\" id=\"O{link_obj_id}\">\n")
+                    code.append( "      <dia:attribute name=\"obj_pos\">\n")
+                    # Koncove body a bounding box umistime jen priblizne -- Dia si stejne po otevreni souboru vse doladi
+                    x_min = min(bx + dw, sx)
+                    x_max = max(bx + dw, sx)
+                    y_min = min(by + dh, sy + dh)
+                    y_max = max(by + dh, sy + dh)
+                    code.append(f"        <dia:point val=\"{x_min},{y_min}\"/>\n")
+                    code.append(("      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"obj_bb\">\n"))
+                    code.append(f"        <dia:rectangle val=\"{x_min - bb},{y_min - bb};{x_max + bb},{y_max + bb}\"/>\n")
+                    code.append(("      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"conn_endpoints\">\n"))
+                    code.append(f"        <dia:point val=\"{bx + dw},{by + dh}\"/>\n")
+                    code.append(f"        <dia:point val=\"{sx},{sy + dh}\"/>\n")
+                    code.append(("      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"numcp\">\n"
+                                 "        <dia:int val=\"1\"/>\n"
+                                 "      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"end_arrow\">\n"
+                                 "        <dia:enum val=\"2\"/>\n"
+                                 "      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"end_arrow_length\">\n"
+                                 "        <dia:real val=\"0.5\"/>\n"
+                                 "      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"end_arrow_width\">\n"
+                                 "        <dia:real val=\"0.5\"/>\n"
+                                 "      </dia:attribute>\n"
+                                 "      <dia:connections>\n"))
+                    code.append(f"        <dia:connection handle=\"0\" to=\"O{table.id}\" connection=\"4\"/>\n")
+                    code.append(f"        <dia:connection handle=\"1\" to=\"O{id}\" connection=\"3\"/>\n")
+                    code.append(("      </dia:connections>\n"
+                                 "    </dia:object>\n"))
+                    # Blok zapiseme do vystupniho souboru
+                    fDia.write(bytes("".join(code), "UTF-8"))
+
+
+        # # Sablona zalomeneho propojeni
+        # "    <dia:object type=\"UML - Generalization\" version=\"1\" id=\"O2\">\n"
+        # "      <dia:attribute name=\"obj_pos\">\n"
+        # "        <dia:point val=\"23.89,6.29\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"obj_bb\">\n"
+        # "        <dia:rectangle val=\"19.815,4.71;23.94,7.14\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"meta\">\n"
+        # "        <dia:composite type=\"dict\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"orth_points\">\n"
+        # "        <dia:point val=\"23.89,6.29\"/>\n"
+        # "        <dia:point val=\"21.4775,6.29\"/>\n"
+        # "        <dia:point val=\"21.4775,4.76\"/>\n"
+        # "        <dia:point val=\"19.865,4.76\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"orth_orient\">\n"
+        # "        <dia:enum val=\"0\"/>\n"
+        # "        <dia:enum val=\"1\"/>\n"
+        # "        <dia:enum val=\"0\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"orth_autoroute\">\n"
+        # "        <dia:boolean val=\"true\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"text_colour\">\n"
+        # "        <dia:color val=\"#000000\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"line_colour\">\n"
+        # "        <dia:color val=\"#000000\"/>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"name\">\n"
+        # "        <dia:string>##</dia:string>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:attribute name=\"stereotype\">\n"
+        # "        <dia:string>##</dia:string>\n"
+        # "      </dia:attribute>\n"
+        # "      <dia:connections>\n"
+        # "        <dia:connection handle=\"0\" to=\"O1\" connection=\"3\"/>\n"
+        # "        <dia:connection handle=\"1\" to=\"O0\" connection=\"4\"/>\n"
+        # "      </dia:connections>\n"
+        # "    </dia:object>\n"
+
+
+
+        #Uplne nakonec jeste musime zapsat koncovou cast XML
+        fDia.write(bytes(footer, "UTF-8"))
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
         exit_code = 1
     finally:
-        if f != None:
-            f.close()
+        if fTxt != None:
+            fTxt.close()
+        if fDia != None:
+            fDia.close()
     os._exit(exit_code)  # sys.exit(exit_code) nelze s exit_code > 0 pouzit -- vyvola dalsi vyjimku (SystemExit)
