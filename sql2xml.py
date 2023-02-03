@@ -1022,10 +1022,10 @@ if __name__ == "__main__":
 
         # DEBUG
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
-        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
+        source_sql = "./test-files/sql_parse_pokus__utf8.sql"
         encoding = "utf-8"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
@@ -1103,6 +1103,10 @@ if __name__ == "__main__":
             print(output)
             # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
             # fTxt.write(output + "\n")
+
+        
+        # TODO: na konec vypisu pridat poznamku "Tento SQL dotaz používá následující tabulky z DB: ..."
+
         
         # # Bloky a vazby mezi nimi ulozime v XML formatu kompatibilnim s aplikaci Dia ( https://wiki.gnome.org/Apps/Dia )
         header = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -1172,7 +1176,7 @@ if __name__ == "__main__":
                   "  <dia:layer name=\"Background\" visible=\"true\" active=\"true\">\n")
         footer = ("  </dia:layer>\n"
                   "</dia:diagram>\n")
-        # Text je zobrazen vzdy cerne, ale samotne tabulky jsou barevne odlisene podle druhu (barvy zvoleny vicemene nahodne, ale tak, aby nepusobily potize lidem s poruchami barvocitu)
+        # Text je zobrazen vzdy cerne, ale samotne tabulky jsou barevne odlisene podle druhu (barvy zvoleny vicemene nahodne, ale tak, aby bloky z WITH byly vyrazne a zaroven barvy nepusobily potize lidem s poruchami barvocitu)
         # Barva beznych tabulek (Table.STANDARD_TABLE)
         std_fg_color = "808080"
         std_bg_color = "EEEEEE"
@@ -1205,6 +1209,11 @@ if __name__ == "__main__":
         i = 0
         # Nyni muzeme zacit "sazet" bloky na (jedinou) vrstvu v diagramu. Kod bloku budeme skladat postupne jako kolekci (aby slo snadno pouzivat f-strings) a az nakonec vse sloucime a zapiseme do souboru. Propojeni bloku pridame az pote, co budou veskere bloky v XML (k tomu si budeme do block_pos ukladat ID tabulek a jim odpovidajici pozice bloku).
         block_pos = {}
+
+
+        # TODO: do schematu vkladat vyhradne WITH bloky + dohledavat (nejlepe asi jeste ted pred samotnym generovanim kodu), zda mezi nimi existuji propojeni pres mezi-tabulky --> K TOMU BUDOU POTREBA I NOVA ID OBJEKTU + DICT PRO JEJICH DOHLEDAVANI PODLE table.id
+
+
         for table in Table.__tables__:
             block_pos[table.id] = (x, y)
             code = []
@@ -1412,8 +1421,8 @@ if __name__ == "__main__":
                     # Nachystame si ID objektu a muzeme zacit generovat kod
                     link_obj_id += 1
                     code = []
-                    code.append(f"    <dia:object type=\"Standard - Line\" version=\"0\" id=\"O{link_obj_id}\">\n")
-                    code.append( "      <dia:attribute name=\"obj_pos\">\n")
+                    code.append(f"    <dia:object type=\"Standard - PolyLine\" version=\"0\" id=\"O{link_obj_id}\">\n")
+                    code.append( "      <dia:attribute name=\"obj_pos\">")
                     # Koncove body a bounding box umistime jen priblizne -- Dia si stejne po otevreni souboru vse doladi
                     x_min = min(bx + dw, sx)
                     x_max = max(bx + dw, sx)
@@ -1424,7 +1433,7 @@ if __name__ == "__main__":
                                  "      <dia:attribute name=\"obj_bb\">\n"))
                     code.append(f"        <dia:rectangle val=\"{x_min - bb},{y_min - bb};{x_max + bb},{y_max + bb}\"/>\n")
                     code.append(("      </dia:attribute>\n"
-                                 "      <dia:attribute name=\"conn_endpoints\">\n"))
+                                 "      <dia:attribute name=\"poly_points\">"))
                     code.append(f"        <dia:point val=\"{bx + dw},{by + dh}\"/>\n")
                     code.append(f"        <dia:point val=\"{sx},{sy + dh}\"/>\n")
                     code.append(("      </dia:attribute>\n"
@@ -1447,6 +1456,33 @@ if __name__ == "__main__":
                                  "    </dia:object>\n"))
                     # Blok zapiseme do vystupniho souboru
                     fDia.write(bytes("".join(code), "UTF-8"))
+
+# "    <dia:object type=\"Standard - PolyLine\" version=\"0\" id=\"O2\">"
+# "      <dia:attribute name=\"obj_pos\">"
+# "        <dia:point val=\"20.865,5.16\"/>"
+# "      </dia:attribute>"
+# "      <dia:attribute name=\"obj_bb\">"
+# "        <dia:rectangle val=\"20.7953,5.0903;24.5313,7.7597\"/>"
+# "      </dia:attribute>"
+# "      <dia:attribute name=\"poly_points\">"
+# "        <dia:point val=\"20.865,5.16\"/>"
+# "        <dia:point val=\"24.44,7.69\"/>"
+# "      </dia:attribute>"
+# "      <dia:attribute name=\"end_arrow\">"
+# "        <dia:enum val=\"2\"/>"
+# "      </dia:attribute>"
+# "      <dia:attribute name=\"end_arrow_length\">"
+# "        <dia:real val=\"0.5\"/>"
+# "      </dia:attribute>"
+# "      <dia:attribute name=\"end_arrow_width\">"
+# "        <dia:real val=\"0.5\"/>"
+# "      </dia:attribute>"
+# "      <dia:connections>"
+# "        <dia:connection handle=\"0\" to=\"O0\" connection=\"4\"/>"
+# "        <dia:connection handle=\"1\" to=\"O1\" connection=\"3\"/>"
+# "      </dia:connections>"
+# "    </dia:object>"
+
 
 
         # # Sablona zalomeneho propojeni
