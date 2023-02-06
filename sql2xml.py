@@ -33,9 +33,7 @@ class Table:
     __next_id__ = 0
     # Mnozina sablon pro automatickou tvorbu nazvu tabulek (klic == sablona, hodnota == aktualni poradove cislo k pouziti pri tvorbe nazvu)
     __next_template_num__ = {}
-    # # Vychozi schema uvazovane pri ukladani celych jmen tabulek
-    # __default_schema__ = "st01"
-    # Typy tabulek (nutne pro pozdejsi barevne odliseni v generovanem schematu/.dia)
+    # Typy tabulek (nutne pro pozdejsi barevne odliseni v generovanem diagramu/.dia)
     STANDARD_TABLE = 0
     WITH_TABLE = 1
     AUX_TABLE = 2
@@ -45,12 +43,9 @@ class Table:
     def __init__(self, name=None, name_template=None, alias=None, attributes=None, conditions=None, comment=None, source_sql=None, table_type=None):
         self.id = Table.__generate_id__()
         if name != None:
-            # # Zkontrolujeme, zda mame cele jmeno tabulky (= vc. schematu) -- pokud ne, doplnime k nazvu vychozi schema
-            # if not "." in name:
-            #     name = f"{Table.__default_schema__}.{name}"
             self.name = name
         else:
-            # Jmeno nebylo zadane, tzn. pracujeme s mezi-tabulkou, jejiz jmeno ulozime bez nazvu schematu
+            # Jmeno nebylo zadane, vygenerujeme ho pomoci sablony
             self.name = Table.__generate_name__(name_template)
         self.aliases = []
         if alias != None:
@@ -184,28 +179,11 @@ class Table:
                 return table.add_alias(alias)
         return False
 
-    # @classmethod
-    # def __get_canonical_name__(cls, name: str) -> str:
-    #     """Vrati cele jmeno tabulky vc. pripadneho nazvu schematu. POZOR: metoda predpoklada, ze zadane jmeno je "pricetne" (= neni None/...)!"""
-    #     if not "." in name:
-    #         is_aux_name = False
-    #         aux_names = Table.__next_template_num__.keys()
-    #         for aname in aux_names:
-    #             if name.startswith(f"{aname}-"):
-    #                 is_aux_name = True
-    #                 break
-    #         # Zadane jmeno neobsahuje nazev schematu (protoze v nazvu neni tecka) a zaroven neodpovida zadnemu pouzitemu typu mezi-tabulky --> do nazvu doplnime schema
-    #         if not is_aux_name:
-    #             name = f"{Table.__default_schema__}.{name}"
-    #     return name
-
     @classmethod
     def get_table_by_name(cls, name: str) -> "Table":
         """Vrati odkaz na tabulku zadaneho jmena, prip. None, pokud v kolekci Table.__tables__ zadna takova tabulka neexistuje. Porovnavani jmen je case-sensitive!"""
         if name == None:
             return None
-        # # Jmeno tabulky musime porovnavat vc. pripadneho nazvu schematu (aliasy naopak porovnavame primo s tim, co mame zadano)
-        # cname = Table.__get_canonical_name__(name)
         for table in Table.__tables__:
             if (name == table.name or name in table.aliases):
                 return table
@@ -230,7 +208,7 @@ class Table:
 
     @classmethod
     def __generate_name__(cls, template: str) -> str:
-        """Vytvori jmeno tabulky podle zadane sablony (template). Pokud sablona neni zadana nebo jde pouze o sekvenci mezer, je jako sablona pouzit retezec "table". Jelikoz jsou generovana pouze jmena mezi-tabulek reprezentujicich SELECT apod., neobsahuji vracene retezce nazev schematu."""
+        """Vytvori jmeno tabulky podle zadane sablony (template). Pokud sablona neni zadana nebo jde pouze o sekvenci mezer, je jako sablona pouzit retezec "table"."""
         if template == None:
             template = "table"
         else:
@@ -249,7 +227,6 @@ class Table:
 
     def add_alias(self, alias: str) -> bool:
         """Zkusi k tabulce pridat zadany alias. Pokud se toto podari, vrati True, jinak (napr. pokud uz zadany alias je mezi znamymi aliasy) vrati False. Porovnavani aliasu je case-sensitive + metoda NEKONTROLUJE pritomnost zadaneho aliasu u zbylych tabulek!"""
-        # Zadany alias staci zkontrolovat bez prihlednuti k pripadnemu nazvu schematu
         if alias == None or self.name == alias or alias in self.aliases:
             return False
         self.aliases.append(alias)
@@ -701,6 +678,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
     while t != None:
+        #Nektera klicova slova zpusobi vraceni vicero tokenu namisto jednoho -- v takovem pripade nesmime resetovat kontext driv, nez zpracujeme veskere relevantni tokeny!
+        can_reset_context = True
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
         token_counter += 1
         if token_counter == 2:
@@ -734,12 +713,19 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
                 token_counter -= 2
             elif (t.normalized == "ORDER BY"
-                    or t.normalized == "GROUP BY"):
+                    or t.normalized == "GROUP BY"
+                    or t.normalized == "CYCLE"
+                    or t.normalized == "SET"
+                    or t.normalized == "TO"
+                    or t.normalized == "DEFAULT"
+                    or t.normalized == "USING"):
                 # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime).
                 sql_components.append(t.value)
                 join_components.append(t.value)
                 union_components.append(t.value)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                # Zaroven si poznacime, ze zatim nelze resetovat kontext, protoze jeste mohou nasledovat dalsi relevantni tokeny
+                can_reset_context = False
             elif t.normalized == "CONNECT":
                 # Zde nelze obecne rici, jakym zpusobem budou tokeny vraceny (nepovinna klicova slova, Identifier vs. Builtin + Comparison + Integer vs. ...). Nasledujici tokeny tedy musime prochazet a ukladat do kolekci (sql_components atd.) tak dlouho, nez najdeme Comparison. POZOR: "...ttype != sql.T.Comparison" NENI TOTEZ JAKO "not isinstance(..., sql.Comparison)"!
                 while t != None and not (t.ttype == sql.T.Comparison or isinstance(t, sql.Comparison)):
@@ -951,9 +937,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     comment_before = obj
                     token_counter = 0
             # Nyni musime jako prvni vec zkontrolovat, jestli nasledujici token neni s hodnotou "DATA", coz sqlparse oznaci za Keyword (pravdepodobne BUG). Pokud tomu tak je, jde o alias k predchozimu nazvu atributu nebo tabulky, ktery adekvatne priradime, ulozime stavajici token do kolekci, opravime hodnotu indexu (i) a promenne drzici token (t) a nacteme novy next_token.
-            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
-            over_ahead = False
-            and_ahead = False
+            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), resp. nenasleduje problematicke klicove slovo, ktere by zpusobilo vraceni vicero tokenu namisto jednoho, muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
             (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
             if next_token != None and next_token.ttype == sql.T.Keyword:
                 if next_token.value.upper() == "DATA":
@@ -978,16 +962,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
                 # Zde musime znovu zkontrolovat, zda i pripadny novy next_token neni None atd.
                 if next_token != None and next_token.ttype == sql.T.Keyword:
-                    over_ahead = next_token.normalized == "OVER"
-                    and_ahead = next_token.normalized == "AND"
-            # # Kod nize staci v pripade, ze se neresi Keyword/alias "DATA"
-            # (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
-            # over_ahead = False
-            # and_ahead = False
-            # if next_token != None and next_token.ttype == sql.T.Keyword:
-            #     over_ahead = next_token.normalized == "OVER"
-            #     and_ahead = next_token.normalized == "AND"
-            if split_attribute == None and not over_ahead and not and_ahead:
+                    can_reset_context = (can_reset_context
+                            and not (next_token.normalized == "OVER"
+                            or next_token.normalized == "AND"
+                            or next_token.normalized == "CYCLE"
+                            or next_token.normalized == "SET"
+                            or next_token.normalized == "TO"
+                            or next_token.normalized == "DEFAULT"
+                            or next_token.normalized == "USING"))
+            if can_reset_context and split_attribute == None:
                 is_within = None
         # Nakonec si ulozime kod otkenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -1010,6 +993,23 @@ def text_to_dia(text: str) -> str:
     return ""
 
 
+def get_linked_with_ids(table: Table) -> list:
+    """Vrati ID vsech tabulek z WITH bloku (table_type == Table.WITH_TABLE), ktere jsou bud primo uvedeny v linked_to_tables_id, prip. jsou dosazitelne skrze nepreruseny retezec mezi-tabulek (table_type == Table.AUX_TABLE) zacinajici některym z ID v linked_to_tables_id"""
+    if table == None or len(table.linked_to_tables_id) == 0:
+        return []
+    linked_with_ids = []
+    for id in table.linked_to_tables_id:
+        t = Table.get_table_by_id(id)
+        if t.table_type == Table.WITH_TABLE:
+            # Je tabulka s danym ID primo WITH tabulkou? Pokud ano, pridame toto ID do linked_ids a pokracujeme kontrolou dalsiho ID z linked_to_tables_id.
+            linked_with_ids.append(t.id)
+        elif t.table_type == Table.AUX_TABLE:
+            # Pokud prave resime mezi-tabulku, musime rekurzivne zkontrolovat veskera ID, se kterymi je tato tabulka svazana
+            linked_with_ids.extend(get_linked_with_ids(t))
+        # Standardni tabulky (ty z databaze) kontrolovat nemusime, protoze pres ne retezec zavislosti WITH tabulek nemuze urcite vest
+    return linked_with_ids
+
+
 if __name__ == "__main__":
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
     if len(sys.argv) > 2:
@@ -1025,8 +1025,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
-        source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        encoding = "utf-8"
+        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
+        # encoding = "utf-8"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
@@ -1035,7 +1035,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        # encoding = "utf-8-sig"
+        source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__REKURZE__utf-8-sig.sql"
+        encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
@@ -1095,18 +1096,26 @@ if __name__ == "__main__":
             raise Exception("Ve zdrojovem SQL souboru nebyla nalezena žádná tabulka")
 
         # Vypiseme textovou reprezentaci tabulek
+        std_table_collection = []
         for table in Table.__tables__:
-            # Potlacime vypis tabulek, ktere nejsou docasne (= existuji v DB a jsou tedy referencovany stylem schema.tabulka)
-            if "." in table.name:
+            # Jmena tabulek z DB si pouze ulozime do kolekce pro potreby pozdejsiho vypisu seznamu
+            if table.table_type == Table.STANDARD_TABLE:
+                std_table_collection.append(f"    * {table.name}")
                 continue
-            output = f"{table}\n"
-            print(output)
+
+            # # DEBUG: vypisy zatim zakazeme, aby slo lepe sledovat potencialne problematicka klicova slova
+            # # Do konzoly vypiseme tabulky z WITH, mezi-tabulky vypisovat nebudeme
+            # if table.table_type == Table.WITH_TABLE:
+            #     output = f"{table}\n"
+            #     print(output)
+            
             # # DEBUG: obcas se hodi ukladat vystup konzoly i na disk...
             # fTxt.write(output + "\n")
 
-        
-        # TODO: na konec vypisu pridat poznamku "Tento SQL dotaz používá následující tabulky z DB: ..."
-
+        if len(std_table_collection) > 0:
+            print("\nTento SQL dotaz používá následující tabulky z DB:\n" + "\n".join(std_table_collection) + "\n")
+        else:
+            print("\nTento SQL dotaz nepoužívá žádné tabulky z DB.\n")
         
         # # Bloky a vazby mezi nimi ulozime v XML formatu kompatibilnim s aplikaci Dia ( https://wiki.gnome.org/Apps/Dia )
         header = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -1177,15 +1186,15 @@ if __name__ == "__main__":
         footer = ("  </dia:layer>\n"
                   "</dia:diagram>\n")
         # Text je zobrazen vzdy cerne, ale samotne tabulky jsou barevne odlisene podle druhu (barvy zvoleny vicemene nahodne, ale tak, aby bloky z WITH byly vyrazne a zaroven barvy nepusobily potize lidem s poruchami barvocitu)
-        # Barva beznych tabulek (Table.STANDARD_TABLE)
-        std_fg_color = "808080"
-        std_bg_color = "EEEEEE"
+        # # Barva beznych tabulek (Table.STANDARD_TABLE)  # TODO: aktualne neni potreba
+        # std_fg_color = "808080"
+        # std_bg_color = "EEEEEE"
         # Barva tabulek ve WITH (Table.WITH_TABLE)
         with_fg_color = "A8A856"
         with_bg_color = "E0E072"
-        # Barva mezi-tabulek (Table.AUX_TABLE)
-        aux_fg_color = "A0A0B9"
-        aux_bg_color = "D4D4E8"
+        # # Barva mezi-tabulek (Table.AUX_TABLE)  # TODO: aktualne neni potreba
+        # aux_fg_color = "A0A0B9"
+        # aux_bg_color = "D4D4E8"
         fDia = gzip.open(filename=fNamePrefix+".dia", mode="wb", compresslevel=9)
         fDia.write(bytes(header, "UTF-8"))
         # Okraj uvazovany pri vypoctu bounding boxu (== polovina line_width v kodu nize, coz staci mit napevno)
@@ -1205,19 +1214,31 @@ if __name__ == "__main__":
         # Posun dvou bloku vuci sobe (horiz./vert.)
         dx = w + 3
         dy = h + 3
-        # Index nasl. bloku pouzivany pri rozmistovani na "radku"
-        i = 0
+        
+        # Budeme vykreslovat pouze tabulky z WITH. Aby bylo mozne spravne pridat zavislosti, musime nejprve u kazde takove tabulky zjistit, jestli "oklikou" (pres mezi-tabulku/y) nezavisi na jine tabulce z WITH. Takove zavislosti si opet ulozime do slovniku, kde klicem bude ID tabulky a hodnotou seznam ID navazanych tabulek.
+        linked_to_with_ids = {}
+        for table in Table.__tables__:
+            # Zavislosti budeme hledat vyhradne u tabulek z WITH bloku
+            if table.table_type != Table.WITH_TABLE:
+                continue
+            linked_to_with_ids[table.id] = get_linked_with_ids(table)
+
         # Nyni muzeme zacit "sazet" bloky na (jedinou) vrstvu v diagramu. Kod bloku budeme skladat postupne jako kolekci (aby slo snadno pouzivat f-strings) a az nakonec vse sloucime a zapiseme do souboru. Propojeni bloku pridame az pote, co budou veskere bloky v XML (k tomu si budeme do block_pos ukladat ID tabulek a jim odpovidajici pozice bloku).
         block_pos = {}
-
-
-        # TODO: do schematu vkladat vyhradne WITH bloky + dohledavat (nejlepe asi jeste ted pred samotnym generovanim kodu), zda mezi nimi existuji propojeni pres mezi-tabulky --> K TOMU BUDOU POTREBA I NOVA ID OBJEKTU + DICT PRO JEJICH DOHLEDAVANI PODLE table.id
-
-
+        # Pro generovani ID bloku budeme kvuli preskakovani vsech tabulek krome tech z WITH potrebovat novou promennou. Dale take bude nutny slovnik pro preklad ID tabulky na ID objektu.
+        obj_id = -1
+        table_id_to_obj_id = {}
+        # Index nasl. bloku pouzivany pri rozmistovani na "radku"
+        i = 0
         for table in Table.__tables__:
-            block_pos[table.id] = (x, y)
+            # Preskocime vsechny tabulky, ktere nejsou primo z WITH bloku
+            if table.table_type != Table.WITH_TABLE:
+                continue
+            obj_id += 1
+            table_id_to_obj_id[table.id] = obj_id
+            block_pos[obj_id] = (x, y)
             code = []
-            code.append(f"    <dia:object type=\"UML - Class\" version=\"0\" id=\"O{table.id}\">\n")
+            code.append(f"    <dia:object type=\"UML - Class\" version=\"0\" id=\"O{obj_id}\">\n")
             code.append( "      <dia:attribute name=\"obj_pos\">\n")
             code.append(f"        <dia:point val=\"{x},{y}\"/>\n")
             code.append(("      </dia:attribute>\n"
@@ -1282,15 +1303,18 @@ if __name__ == "__main__":
                          "        <dia:real val=\"0.10\"/>\n"
                          "      </dia:attribute>\n"
                          "      <dia:attribute name=\"line_color\">\n"))
-            if table.table_type == Table.WITH_TABLE:
-                fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
-                bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
-            elif table.table_type == Table.AUX_TABLE:
-                fg_color = f"        <dia:color val=\"#{aux_fg_color}\"/>\n"
-                bg_color = f"        <dia:color val=\"#{aux_bg_color}\"/>\n"
-            else:
-                fg_color = f"        <dia:color val=\"#{std_fg_color}\"/>\n"
-                bg_color = f"        <dia:color val=\"#{std_bg_color}\"/>\n"
+            # Vsechno krome bloku z WITh preskakujeme --> kod nize neni potreba, barvy lze nastavit rovnou
+            # if table.table_type == Table.WITH_TABLE:
+            #     fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
+            #     bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            # elif table.table_type == Table.AUX_TABLE:
+            #     fg_color = f"        <dia:color val=\"#{aux_fg_color}\"/>\n"
+            #     bg_color = f"        <dia:color val=\"#{aux_bg_color}\"/>\n"
+            # else:
+            #     fg_color = f"        <dia:color val=\"#{std_fg_color}\"/>\n"
+            #     bg_color = f"        <dia:color val=\"#{std_bg_color}\"/>\n"
+            fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
+            bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
             code.append(fg_color)
             code.append(("      </dia:attribute>\n"
                          "      <dia:attribute name=\"fill_color\">\n"))
@@ -1407,21 +1431,25 @@ if __name__ == "__main__":
                 x = x0
                 y += dy
         
-        # Zjistime posledni ID "tabulkoveho" bloku, abychom mohli nyni generovat ID objektu reprezentujicich propojeni (pro vetsi prehlednost diagramu budeme pouzivat obycejna/non-UML propojeni namisto zalomenych)
-        link_obj_id = Table.__tables__[-1].id
-        # Ted muzeme pridat propojeni bloku (souradnice budeme dopocitavat na zaklade pozic bloku)
+        # Po vlozeni vsech bloku muzeme pridat propojeni mezi nimi (priblizne souradnice budeme dopocitavat na zaklade pozic bloku)
         for table in Table.__tables__:
+            # Opet preskocime vsechny tabulky, ktere nejsou primo z WITH bloku
+            if table.table_type != Table.WITH_TABLE:
+                continue
             # Je tabulka navazana na alespon jednu jinou tabulkou?
-            if len(table.linked_to_tables_id) > 0:
+            table_linked_to_with_ids = linked_to_with_ids[table.id]
+            if len(table_linked_to_with_ids) > 0:
+                current_block_id = table_id_to_obj_id[table.id]
                 # Pozice akt. tabulky
-                (bx, by) = block_pos[table.id]
-                for id in table.linked_to_tables_id:
+                (bx, by) = block_pos[current_block_id]
+                for id in table_linked_to_with_ids:
+                    linked_block_id = table_id_to_obj_id[id]
                     # Pozice navazane (zdrojove) tabulky
-                    (sx, sy) = block_pos[id]
+                    (sx, sy) = block_pos[linked_block_id]
                     # Nachystame si ID objektu a muzeme zacit generovat kod
-                    link_obj_id += 1
+                    obj_id += 1
                     code = []
-                    code.append(f"    <dia:object type=\"Standard - PolyLine\" version=\"0\" id=\"O{link_obj_id}\">\n")
+                    code.append(f"    <dia:object type=\"Standard - PolyLine\" version=\"0\" id=\"O{obj_id}\">\n")
                     code.append( "      <dia:attribute name=\"obj_pos\">")
                     # Koncove body a bounding box umistime jen priblizne -- Dia si stejne po otevreni souboru vse doladi
                     x_min = min(bx + dw, sx)
@@ -1450,85 +1478,13 @@ if __name__ == "__main__":
                                  "        <dia:real val=\"0.5\"/>\n"
                                  "      </dia:attribute>\n"
                                  "      <dia:connections>\n"))
-                    code.append(f"        <dia:connection handle=\"0\" to=\"O{table.id}\" connection=\"4\"/>\n")
-                    code.append(f"        <dia:connection handle=\"1\" to=\"O{id}\" connection=\"3\"/>\n")
+                    # Sipky chceme opacne, nez je zvykem v UML
+                    code.append(f"        <dia:connection handle=\"0\" to=\"O{linked_block_id}\" connection=\"4\"/>\n")
+                    code.append(f"        <dia:connection handle=\"1\" to=\"O{current_block_id}\" connection=\"3\"/>\n")
                     code.append(("      </dia:connections>\n"
                                  "    </dia:object>\n"))
                     # Blok zapiseme do vystupniho souboru
                     fDia.write(bytes("".join(code), "UTF-8"))
-
-# "    <dia:object type=\"Standard - PolyLine\" version=\"0\" id=\"O2\">"
-# "      <dia:attribute name=\"obj_pos\">"
-# "        <dia:point val=\"20.865,5.16\"/>"
-# "      </dia:attribute>"
-# "      <dia:attribute name=\"obj_bb\">"
-# "        <dia:rectangle val=\"20.7953,5.0903;24.5313,7.7597\"/>"
-# "      </dia:attribute>"
-# "      <dia:attribute name=\"poly_points\">"
-# "        <dia:point val=\"20.865,5.16\"/>"
-# "        <dia:point val=\"24.44,7.69\"/>"
-# "      </dia:attribute>"
-# "      <dia:attribute name=\"end_arrow\">"
-# "        <dia:enum val=\"2\"/>"
-# "      </dia:attribute>"
-# "      <dia:attribute name=\"end_arrow_length\">"
-# "        <dia:real val=\"0.5\"/>"
-# "      </dia:attribute>"
-# "      <dia:attribute name=\"end_arrow_width\">"
-# "        <dia:real val=\"0.5\"/>"
-# "      </dia:attribute>"
-# "      <dia:connections>"
-# "        <dia:connection handle=\"0\" to=\"O0\" connection=\"4\"/>"
-# "        <dia:connection handle=\"1\" to=\"O1\" connection=\"3\"/>"
-# "      </dia:connections>"
-# "    </dia:object>"
-
-
-
-        # # Sablona zalomeneho propojeni
-        # "    <dia:object type=\"UML - Generalization\" version=\"1\" id=\"O2\">\n"
-        # "      <dia:attribute name=\"obj_pos\">\n"
-        # "        <dia:point val=\"23.89,6.29\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"obj_bb\">\n"
-        # "        <dia:rectangle val=\"19.815,4.71;23.94,7.14\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"meta\">\n"
-        # "        <dia:composite type=\"dict\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"orth_points\">\n"
-        # "        <dia:point val=\"23.89,6.29\"/>\n"
-        # "        <dia:point val=\"21.4775,6.29\"/>\n"
-        # "        <dia:point val=\"21.4775,4.76\"/>\n"
-        # "        <dia:point val=\"19.865,4.76\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"orth_orient\">\n"
-        # "        <dia:enum val=\"0\"/>\n"
-        # "        <dia:enum val=\"1\"/>\n"
-        # "        <dia:enum val=\"0\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"orth_autoroute\">\n"
-        # "        <dia:boolean val=\"true\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"text_colour\">\n"
-        # "        <dia:color val=\"#000000\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"line_colour\">\n"
-        # "        <dia:color val=\"#000000\"/>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"name\">\n"
-        # "        <dia:string>##</dia:string>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:attribute name=\"stereotype\">\n"
-        # "        <dia:string>##</dia:string>\n"
-        # "      </dia:attribute>\n"
-        # "      <dia:connections>\n"
-        # "        <dia:connection handle=\"0\" to=\"O1\" connection=\"3\"/>\n"
-        # "        <dia:connection handle=\"1\" to=\"O0\" connection=\"4\"/>\n"
-        # "      </dia:connections>\n"
-        # "    </dia:object>\n"
-
-
 
         #Uplne nakonec jeste musime zapsat koncovou cast XML
         fDia.write(bytes(footer, "UTF-8"))
