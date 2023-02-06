@@ -36,7 +36,8 @@ class Table:
     # Typy tabulek (nutne pro pozdejsi barevne odliseni v generovanem diagramu/.dia)
     STANDARD_TABLE = 0
     WITH_TABLE = 1
-    AUX_TABLE = 2
+    MAIN_SELECT = 2
+    AUX_TABLE = 3
     # Kolekce nalezenych tabulek
     __tables__ = []
 
@@ -64,6 +65,7 @@ class Table:
         if (table_type == None
                 or (table_type != Table.STANDARD_TABLE
                 and table_type != Table.WITH_TABLE
+                and table_type != Table.MAIN_SELECT
                 and table_type != Table.AUX_TABLE)):
             table_type = Table.STANDARD_TABLE
         self.table_type = table_type
@@ -762,7 +764,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 is_within = "select"
                 # Pokud jde o SELECT na nejvyssi urovni dotazu, neexistuje pro nej zatim zadna tabulka. Tuto tedy vytvorime, aby k ni pak bylo mozne doplnit atributy atd.
                 if table == None:
-                    table = Table(name_template="select", comment=comment_before, table_type=Table.AUX_TABLE)
+                    table = Table(name_template="main-select", comment=comment_before, table_type=Table.MAIN_SELECT)
                     Table.__tables__.append(table)
                 sql_components = []
         elif isinstance(t, sql.Where):
@@ -993,21 +995,21 @@ def text_to_dia(text: str) -> str:
     return ""
 
 
-def get_linked_with_ids(table: Table) -> list:
-    """Vrati ID vsech tabulek z WITH bloku (table_type == Table.WITH_TABLE), ktere jsou bud primo uvedeny v linked_to_tables_id, prip. jsou dosazitelne skrze nepreruseny retezec mezi-tabulek (table_type == Table.AUX_TABLE) zacinajici některym z ID v linked_to_tables_id"""
+def get_primary_linked_ids(table: Table) -> list:
+    """Vrati ID vsech tabulek z WITH bloku (table_type == Table.WITH_TABLE), resp. SELECT na nejvyssi urovni (table_type == Table.MAIN_SELECT), ktere jsou bud primo uvedeny v linked_to_tables_id, prip. jsou dosazitelne skrze nepreruseny retezec mezi-tabulek (table_type == Table.AUX_TABLE) zacinajici nekterym z ID v linked_to_tables_id"""
     if table == None or len(table.linked_to_tables_id) == 0:
         return []
-    linked_with_ids = []
+    primary_linked_ids = []
     for id in table.linked_to_tables_id:
         t = Table.get_table_by_id(id)
-        if t.table_type == Table.WITH_TABLE:
-            # Je tabulka s danym ID primo WITH tabulkou? Pokud ano, pridame toto ID do linked_ids a pokracujeme kontrolou dalsiho ID z linked_to_tables_id.
-            linked_with_ids.append(t.id)
+        if t.table_type == Table.WITH_TABLE or t.table_type == Table.MAIN_SELECT:
+            # Je tabulka s danym ID primo WITH tabulkou, prip. SELECT na nejvyssi urovni? Pokud ano, pridame toto ID do linked_ids a pokracujeme kontrolou dalsiho ID z linked_to_tables_id.
+            primary_linked_ids.append(t.id)
         elif t.table_type == Table.AUX_TABLE:
             # Pokud prave resime mezi-tabulku, musime rekurzivne zkontrolovat veskera ID, se kterymi je tato tabulka svazana
-            linked_with_ids.extend(get_linked_with_ids(t))
+            primary_linked_ids.extend(get_primary_linked_ids(t))
         # Standardni tabulky (ty z databaze) kontrolovat nemusime, protoze pres ne retezec zavislosti WITH tabulek nemuze urcite vest
-    return linked_with_ids
+    return primary_linked_ids
 
 
 if __name__ == "__main__":
@@ -1192,9 +1194,9 @@ if __name__ == "__main__":
         # Barva tabulek ve WITH (Table.WITH_TABLE)
         with_fg_color = "A8A856"
         with_bg_color = "E0E072"
-        # # Barva mezi-tabulek (Table.AUX_TABLE)  # TODO: aktualne neni potreba
-        # aux_fg_color = "A0A0B9"
-        # aux_bg_color = "D4D4E8"
+        # Barva SLECTu na nejvyssi urovni (Table.MAIN_SELECT)
+        ms_fg_color = "A0A0B9"
+        ms_bg_color = "D4D4E8"
         fDia = gzip.open(filename=fNamePrefix+".dia", mode="wb", compresslevel=9)
         fDia.write(bytes(header, "UTF-8"))
         # Okraj uvazovany pri vypoctu bounding boxu (== polovina line_width v kodu nize, coz staci mit napevno)
@@ -1215,13 +1217,14 @@ if __name__ == "__main__":
         dx = w + 3
         dy = h + 3
         
-        # Budeme vykreslovat pouze tabulky z WITH. Aby bylo mozne spravne pridat zavislosti, musime nejprve u kazde takove tabulky zjistit, jestli "oklikou" (pres mezi-tabulku/y) nezavisi na jine tabulce z WITH. Takove zavislosti si opet ulozime do slovniku, kde klicem bude ID tabulky a hodnotou seznam ID navazanych tabulek.
-        linked_to_with_ids = {}
+        # Budeme vykreslovat pouze tabulky z WITH/SELECT na nejvyssi urovni. Aby bylo mozne spravne pridat zavislosti, musime nejprve u kazde takove tabulky zjistit, jestli "oklikou" (pres mezi-tabulku/y) nezavisi na jine tabulce z WITH. Takove zavislosti si opet ulozime do slovniku, kde klicem bude ID tabulky a hodnotou seznam ID navazanych tabulek.
+        primary_linked_ids = {}
         for table in Table.__tables__:
             # Zavislosti budeme hledat vyhradne u tabulek z WITH bloku
-            if table.table_type != Table.WITH_TABLE:
+            if (table.table_type != Table.WITH_TABLE
+                    and table.table_type != Table.MAIN_SELECT):
                 continue
-            linked_to_with_ids[table.id] = get_linked_with_ids(table)
+            primary_linked_ids[table.id] = get_primary_linked_ids(table)
 
         # Nyni muzeme zacit "sazet" bloky na (jedinou) vrstvu v diagramu. Kod bloku budeme skladat postupne jako kolekci (aby slo snadno pouzivat f-strings) a az nakonec vse sloucime a zapiseme do souboru. Propojeni bloku pridame az pote, co budou veskere bloky v XML (k tomu si budeme do block_pos ukladat ID tabulek a jim odpovidajici pozice bloku).
         block_pos = {}
@@ -1231,8 +1234,9 @@ if __name__ == "__main__":
         # Index nasl. bloku pouzivany pri rozmistovani na "radku"
         i = 0
         for table in Table.__tables__:
-            # Preskocime vsechny tabulky, ktere nejsou primo z WITH bloku
-            if table.table_type != Table.WITH_TABLE:
+            # Preskocime vsechny tabulky, ktere nejsou primo z WITH bloku/SELECTy na nejvyssi urovni
+            if (table.table_type != Table.WITH_TABLE
+                    and table.table_type != Table.MAIN_SELECT):
                 continue
             obj_id += 1
             table_id_to_obj_id[table.id] = obj_id
@@ -1303,18 +1307,19 @@ if __name__ == "__main__":
                          "        <dia:real val=\"0.10\"/>\n"
                          "      </dia:attribute>\n"
                          "      <dia:attribute name=\"line_color\">\n"))
-            # Vsechno krome bloku z WITh preskakujeme --> kod nize neni potreba, barvy lze nastavit rovnou
-            # if table.table_type == Table.WITH_TABLE:
-            #     fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
-            #     bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            # Vykreslujeme pouze tab. z WITH, resp. SELECT na nejvyssi urovni --> barvy lze nastavit obycejnym IF ... ELSE ...
+            if table.table_type == Table.WITH_TABLE:
+                fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
+                bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            else:
+                fg_color = f"        <dia:color val=\"#{ms_fg_color}\"/>\n"
+                bg_color = f"        <dia:color val=\"#{ms_bg_color}\"/>\n"
             # elif table.table_type == Table.AUX_TABLE:
             #     fg_color = f"        <dia:color val=\"#{aux_fg_color}\"/>\n"
             #     bg_color = f"        <dia:color val=\"#{aux_bg_color}\"/>\n"
             # else:
             #     fg_color = f"        <dia:color val=\"#{std_fg_color}\"/>\n"
             #     bg_color = f"        <dia:color val=\"#{std_bg_color}\"/>\n"
-            fg_color = f"        <dia:color val=\"#{with_fg_color}\"/>\n"
-            bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
             code.append(fg_color)
             code.append(("      </dia:attribute>\n"
                          "      <dia:attribute name=\"fill_color\">\n"))
@@ -1433,11 +1438,12 @@ if __name__ == "__main__":
         
         # Po vlozeni vsech bloku muzeme pridat propojeni mezi nimi (priblizne souradnice budeme dopocitavat na zaklade pozic bloku)
         for table in Table.__tables__:
-            # Opet preskocime vsechny tabulky, ktere nejsou primo z WITH bloku
-            if table.table_type != Table.WITH_TABLE:
+            # Opet preskocime vsechny tabulky, ktere nejsou primo z WITH bloku/SELECTy na nejvyssi urovni
+            if (table.table_type != Table.WITH_TABLE
+                    and table.table_type != Table.MAIN_SELECT):
                 continue
             # Je tabulka navazana na alespon jednu jinou tabulkou?
-            table_linked_to_with_ids = linked_to_with_ids[table.id]
+            table_linked_to_with_ids = primary_linked_ids[table.id]
             if len(table_linked_to_with_ids) > 0:
                 current_block_id = table_id_to_obj_id[table.id]
                 # Pozice akt. tabulky
