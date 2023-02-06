@@ -706,7 +706,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 is_within = "on"
             elif "UNION" in t.normalized:
                 is_within = "union-select"
-            elif t.normalized == "OVER":  # V zasade by slo resit pomoci over_ahead, ale nebylo by nijak znatelne rychlejsi...
+            elif t.normalized == "OVER":
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
                 split_attribute = table.attributes[-1]
@@ -1443,12 +1443,12 @@ if __name__ == "__main__":
                     and table.table_type != Table.MAIN_SELECT):
                 continue
             # Je tabulka navazana na alespon jednu jinou tabulkou?
-            table_linked_to_with_ids = primary_linked_ids[table.id]
-            if len(table_linked_to_with_ids) > 0:
+            table_linked_to_primary_ids = primary_linked_ids[table.id]
+            if len(table_linked_to_primary_ids) > 0:
                 current_block_id = table_id_to_obj_id[table.id]
                 # Pozice akt. tabulky
                 (bx, by) = block_pos[current_block_id]
-                for id in table_linked_to_with_ids:
+                for id in table_linked_to_primary_ids:
                     linked_block_id = table_id_to_obj_id[id]
                     # Pozice navazane (zdrojove) tabulky
                     (sx, sy) = block_pos[linked_block_id]
@@ -1483,10 +1483,23 @@ if __name__ == "__main__":
                                  "      <dia:attribute name=\"end_arrow_width\">\n"
                                  "        <dia:real val=\"0.5\"/>\n"
                                  "      </dia:attribute>\n"
+                                 "      <dia:attribute name=\"corner_radius\">\n"
+                                 "        <dia:real val=\"1\"/>\n"
+                                 "      </dia:attribute>\n"
                                  "      <dia:connections>\n"))
                     # Sipky chceme opacne, nez je zvykem v UML
-                    code.append(f"        <dia:connection handle=\"0\" to=\"O{linked_block_id}\" connection=\"4\"/>\n")
-                    code.append(f"        <dia:connection handle=\"1\" to=\"O{current_block_id}\" connection=\"3\"/>\n")
+                    # Pro korektni propojeni smerem ke stredum bloku jsou potreba ID poslednich connection pointu. tato ID proto musime dopocitat na zaklade poctu atributu:
+                    #   * pro current_block_id toto zjistime primo z table
+                    #   * pro linked_block_id musime najit danou tabulku pomoci Table.get_table_by_id(id)
+                    # Dale take musime vzit v uvahu pripadnou rekurzi, kde spojujeme blok sam se sebou, cili v takovem pripade nelze spojovat i tentyz uzel, ale spojime connection pointy 4 a 3 (po stranach titulni casti bloku).
+                    if current_block_id != linked_block_id:
+                        current_block_cp_id = 8 + 2 * max(len(table.attributes), 1)
+                        linked_block_cp_id = 8 + 2 * max(len(Table.get_table_by_id(id).attributes), 1)
+                    else:
+                        current_block_cp_id = 3
+                        linked_block_cp_id = 4
+                    code.append(f"        <dia:connection handle=\"0\" to=\"O{linked_block_id}\" connection=\"{linked_block_cp_id}\"/>\n")
+                    code.append(f"        <dia:connection handle=\"1\" to=\"O{current_block_id}\" connection=\"{current_block_cp_id}\"/>\n")
                     code.append(("      </dia:connections>\n"
                                  "    </dia:object>\n"))
                     # Blok zapiseme do vystupniho souboru
