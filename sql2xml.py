@@ -23,7 +23,7 @@ class Attribute:
             self.comment = None
             return
         # .lstrip(...) odstrani vsechny uvodni pomlcky a mezery (u viceradkoveho komentare s /* a */ tyto znaky ponechame). Zaroven odstranime i zbytecne bile znaky.
-        self.comment = comment.strip().lstrip("- ")
+        self.comment = comment.strip().lstrip("- \n\t")
         
 
 
@@ -143,7 +143,7 @@ class Table:
             self.comment = None
             return
         # .lstrip(...) odstrani vsechny uvodni pomlcky a mezery (u viceradkoveho komentare s /* a */ tyto znaky ponechame). Zaroven odstranime i zbytecne bile znaky.
-        self.comment = comment.strip().lstrip("- ")
+        self.comment = comment.strip().lstrip("- \n\t")
     
     @classmethod
     def __trim_to_length__(cls, text: str, max_snippet_length=None) -> str:
@@ -297,6 +297,26 @@ def is_comment(t: sql.Token) -> bool:
         or t.ttype == sql.T.Comment.Multiline)
 
 
+def split_comment(t: sql.Token) -> list:
+    """Vraci zadany komentar rozdeleny podle posledniho vyskytu skupiny deseti nebo vice pomlcek (split_seq; melo by stacit pro dostatecne dobre odliseni casti). Pokud se zmineny oddelovac v hodnote tokenu nenachazi, vrati metoda celou hodnotu jako pocatecni i koncovou cast, jelikoz nelze dopredu rici, kterou z nich bude volajici kod dale pouzivat. Metoda take predpoklada, ze token sam o sobe je nejakou variantou komentare!"""
+    split_seq = "----------"
+    text = t.value
+    idx = text.rfind(split_seq)
+    if idx < 0:
+        # Oddelovac se v textu nenachazi, cili vratime cely text jako pocatecni i koncovou cast (jen z nej orezeme leaning/trailing pomlcky a mezery)
+        text = text.lstrip("- \n\t").rstrip("- \n\t")
+        # Pred vracenim komentare jeste nahradime vicenasobne bile znaky mezerami
+        text = " ".join(text.split())
+        return [text, text]
+    # Oddelovac jsme nasli, takze podle nej text rozdelime a kazdou z casti orezeme na zacatku i na konci pomoci .lstrip(...)/.rstrip(...) jako vyse
+    leading_portion = text[:idx].lstrip("- \n\t").rstrip("- \n\t")
+    trailing_portion = text[(idx + 1 + len(split_seq)):].lstrip("- \n\t").rstrip("- \n\t")
+    # Pred vracenim casti komentare jeste nahradime vicenasobne bile znaky mezerami
+    leading_portion = " ".join(leading_portion.split())
+    trailing_portion = " ".join(trailing_portion.split())
+    return [leading_portion, trailing_portion]
+
+
 def get_name_alias_comment(t: sql.Token) -> tuple:
     """Extrahuje ze zadaneho tokenu jmeno a pripadny alias a komentar (typicke uziti: SELECT ... FROM <token>)"""
     # Struktura: name [ whitespace(s) [ AS whitespace(s) ] alias ]
@@ -339,7 +359,8 @@ def get_name_alias_comment(t: sql.Token) -> tuple:
     # Nakonec jeste overime typ posledniho tokenu v t.tokens -- jde-li o komentar, vratime ho spolu se jmenem a aliasem (pripadne bile znaky za komentarem uz sqlparse nevraci jako soucast tokenu t). Z komentare neni potreba odstranovat leading/trailing whitespaces, jelikoz toto je provedeno  vkontruktoru.
     last_token = t.tokens[-1]
     if is_comment(last_token):
-        return name, alias, last_token.value
+        # Je-li zde komentar, zajiman nas obecne jeho uvodni cast (pred serii pomlcek)
+        return name, alias, split_comment(last_token)[0]
     return name, alias, None
 
 
@@ -371,7 +392,8 @@ def process_comparison(t: sql.Comparison) -> Attribute:
     # Nakonec jeste overime typ posledniho tokenu v t.tokens -- jde-li o komentar, vratime ho spolu se jmenem a pozadovanou hodnotou (pripadne bile znaky za komentarem uz sqlparse nevraci jako soucast tokenu t). Z komentare neni potreba odstranovat leading/trailing whitespaces, jelikoz toto je provedeno  vkontruktoru.
     last_token = t.tokens[-1]
     if is_comment(last_token):
-        return Attribute(name=name, condition=f"{operator} {value}", comment=last_token.value)
+        # Z komentare nas zajima pouze cast po pripadnyou delsi serii pomlcek
+        return Attribute(name=name, condition=f"{operator} {value}", comment=split_comment(last_token)[0])
     return Attribute(name=name, condition=f"{operator} {value}")
 
 
@@ -402,7 +424,8 @@ def get_attribute_conditions(t: sql.Token) -> list:
             elif token.ttype in sql.T.Literal:
                 components.append(token.value)
             elif is_comment(token):
-                comment = token.value
+                # Z komentare nas zajima pouze cast po pripadnyou delsi serii pomlcek
+                comment = split_comment(token)[0]
             else:
                 break
             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
@@ -417,10 +440,11 @@ def get_attribute_conditions(t: sql.Token) -> list:
         (i, token) = t.token_next(0, skip_ws=True, skip_cm=False)
         while token != None:
             if is_comment(token):
-                comment_before = token.value.strip()
+                # Z komentare nas zajima pouze cast za pripadnou delsi serii pomlcek
+                comment_before = split_comment(token)[1]
                 if token == last_token:
-                    # Zde jsme narazili na komentar k mezi-tabulce (napr. "JOIN ... ON ( ... ) komentar"), prip. komentar k nalsedujicimu bloku v SQL kodu. Pridame fiktivni atribut (name == alias == None, condition == "COMMENT", comment != None), ze ktereho pak bude komentar extrahovan.
-                    attributes.append(Attribute(name=None, alias=None, condition="COMMENT", comment=token.value))
+                    # Zde jsme narazili na komentar k mezi-tabulce (napr. "JOIN ... ON ( ... ) komentar"), prip. komentar k nasledujicimu bloku v SQL kodu. Pridame fiktivni atribut (name == alias == None, condition == "COMMENT", comment != None), ze ktereho pak bude komentar extrahovan.
+                    attributes.append(Attribute(name=None, alias=None, condition="COMMENT", comment=comment_before))
                     return attributes
                 if len(attributes) > 0:
                     # Jde o komentar k poslednimu nalezenemu atributu
@@ -431,7 +455,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 while token != None:
                     if is_comment(token):
                         # Pripadny komentar si ulozime, jelikoz by se tykal nasledujici mezi-tabulky "EXISTS ( SELECT ... )"
-                        comment_before = token.value.strip()
+                        comment_before = split_comment(token)[1]
                     elif isinstance(token, sql.Parenthesis):
                         # Nasli jsme zavorku se SELECT, k cemuz je nutne vytvorit patricnou mezi-tabulku
                         exists_table = Table(name_template="exists-select", comment=comment_before, table_type=Table.AUX_TABLE)
@@ -455,14 +479,16 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     value = token.normalized
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                     if is_comment(token):
-                        comment = token.value
+                        # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci atributu, cili nas zajima jeho pocatecni cast
+                        comment = split_comment(token)[0]
                 else:
                     components = []
                     while token != None and len(components) < 3:
                         if token.ttype == sql.T.Keyword:
                             components.append(token.normalized)
                         elif is_comment(token):
-                            comment = token.value
+                            # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci atributu, cili nas zajima jeho pocatecni cast
+                            comment = split_comment(token)[0]
                         else:
                             # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl). Ukladame vsak .normalized, cimz dojde k orezani pripadnych internich komentaru.
                             components.append(token.normalized)
@@ -511,7 +537,8 @@ def process_with_element(t, comment_before="") -> str:
         # Zpracovani zavorky se SELECT vsak zatim preskocime -- nejprve si ulozime pripadny komentar z konce t-tokens a vyrobime tabulku reprezentujici zpracovavany blok, jejiz atributy budou doplneny/aktualizovany pozdeji (az se k nim dostaneme pri prochazeni SQL kodu)
         last_token = t.tokens[-1]
         if is_comment(last_token):
-            comment_after = last_token.value.strip()
+            # Jde o komentar k zavorce, cili nas zajima primarne to, co nasleduje az po serii pomlcek
+            comment_after = split_comment(last_token)[1]
         else:
             comment_after = ""
         table = Table(name=name, comment=comment_before, source_sql=t.value, table_type=Table.WITH_TABLE)
@@ -665,6 +692,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     t = s.token_first(skip_ws=True, skip_cm=False)
     # Flag pro predavani informaci o kontextu toho ktereho tokenu (v ruznych kontextech je zpravidla potreba mirne odlisny zpusob zpracovani)
     is_within = None
+    # Flag pro reseni nestandardnich situaci vlivem chyb v sqlparse (rozdelene tokeny apod.) -- ridi, zda lze resetovat promennou is_within
+    can_reset_context = True
     comment_before = ""
     # Pocitadlo radku od posledniho komentare (nekdy nas zajima komentar pred aktualnim tokenem). Pocatecni hodnota je libovolna takova, aby se v cyklu na zacatku NEresetoval comment_before, pokud by SQL dotaz nezacinal komentarem.
     token_counter = 10
@@ -680,15 +709,23 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
     while t != None:
-        #Nektera klicova slova zpusobi vraceni vicero tokenu namisto jednoho -- v takovem pripade nesmime resetovat kontext driv, nez zpracujeme veskere relevantni tokeny!
+        if t.ttype == sql.T.Punctuation:
+            # Carku apod. pouze ulozime do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
+            sql_components.append(t.value)
+            join_components.append(t.value)
+            union_components.append(t.value)
+            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            continue
+        # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou). Je take nutne vzit do uvahy can_reset_context -- pokud je False, vime, ze doslo k umelemu rozdeleni tokenu a reset comment_before nelze provest.
+        if can_reset_context:
+            token_counter += 1
+            if token_counter == 2:
+                comment_before = ""
+        # Nektera klicova slova zpusobi vraceni vicero tokenu namisto jednoho -- v takovem pripade nesmime resetovat kontext driv, nez zpracujeme veskere relevantni tokeny!
         can_reset_context = True
-        # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou)
-        token_counter += 1
-        if token_counter == 2:
-            comment_before = ""
         if is_comment(t):
-            # Pri nalezeni komentare si tento ulozime a resetujeme token_counter
-            comment_before = t.value.strip()
+            # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
+            comment_before = split_comment(t)[1]
             token_counter = 0
         elif t.ttype == sql.T.Keyword:
             # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni is_within na patricny kontext
@@ -712,8 +749,6 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 split_attribute = table.attributes[-1]
                 # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
                 split_attribute.comment = " OVER "
-                # Zaroven musime snizit hodnotu token_counter o 2, jelikoz umelym rozdelenim bloku atributu na vicero tokenu kvuli OVER nacteme o 2 tokeny vice
-                token_counter -= 2
             elif (t.normalized == "ORDER BY"
                     or t.normalized == "GROUP BY"
                     or t.normalized == "CYCLE"
@@ -795,8 +830,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 union_table.conditions.extend(attributes)
             else:
                 table.conditions.extend(attributes)
-        elif not t.ttype == sql.T.Punctuation:
-            # Jakykoliv jiny token (tedy pokud nejde o Punctuation) zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before).
+        else:
+            # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (is_within) a pripadnem komentari pred tokenem (comment_before).
             # Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je is_within == None, tzn. process_token(...) vrati None.
             obj = process_token(t, is_within, comment_before)
             # Navratova hodnota process_token(...) muze byt ruznych typu v zavislosti na kontextu apod. Na zaklade toho se nyni rozhodneme, jakym konkretnim zpusobem je potreba s ni nalozit.
@@ -854,8 +889,6 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         if split_attribute == None:
                             if obj[-1].condition == "SPLIT_ATTRIBUTE":
                                 split_attribute = obj.pop()
-                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu nacteme o 1 token vice
-                                token_counter = max(0, token_counter - 1)
                         else:
                             attr_remainder = obj.pop(0)
                             # Pokud napr. mezi "GROUP" a nasledujici zavorkou neni mezera, je pokracovani tokenu vc. klicoveho slova "GROUP". Zkontrolujeme tedy, zda jmeno attr_remainder zacina na "(" -- pokud ne a spojovaci reteze (split_attribute.comment) zaroven obsahuje vice nez jedno slovo, to posledni z nej odstranime.
@@ -872,8 +905,6 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             table.attributes.append(split_attribute)
                             if len(obj) > 0 and obj[-1].condition == "SPLIT_ATTRIBUTE":
                                 split_attribute = obj.pop()
-                                # Zaroven musime snizit hodnotu token_counter o 1, jelikoz umelym rozdelenim bloku atributu na vicero tokenu nacteme o 1 token vice
-                                token_counter -= 1
                             else:
                                 split_attribute = None
                         # Nakonec k tabulce pridame atributy zbyle v obj (musime ale zohlednit pripadnou znalost aliasu!)
@@ -974,7 +1005,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             or next_token.normalized == "USING"))
             if can_reset_context and split_attribute == None:
                 is_within = None
-        # Nakonec si ulozime kod otkenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
+        # Nakonec si ulozime kod tokenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
         join_components.append(t.value)
         union_components.append(t.value)
@@ -1208,8 +1239,8 @@ if __name__ == "__main__":
         x = x0
         y = bb
         # Rozmery bloku
-        w = 10
-        h = 4
+        w = 20
+        h = 10
         # Horiz./vert. posuny pro umistovani propojeni bloku (blok nemusi byt s ohledem na uvedeny text po otevreni siroky "w" + sipka vede z/do mista v polovine zahlavi s nazvem)
         dw = 0.3 * w
         dh = 0.1 * h
@@ -1491,7 +1522,7 @@ if __name__ == "__main__":
                     # Pro korektni propojeni smerem ke stredum bloku jsou potreba ID poslednich connection pointu. tato ID proto musime dopocitat na zaklade poctu atributu:
                     #   * pro current_block_id toto zjistime primo z table
                     #   * pro linked_block_id musime najit danou tabulku pomoci Table.get_table_by_id(id)
-                    # Dale take musime vzit v uvahu pripadnou rekurzi, kde spojujeme blok sam se sebou, cili v takovem pripade nelze spojovat i tentyz uzel, ale spojime connection pointy 4 a 3 (po stranach titulni casti bloku).
+                    # Dale take musime vzit v uvahu pripadnou rekurzi, kde spojujeme blok sam se sebou. V takovem pripade nelze spojovat jediny uzel, ale spojime connection pointy 4 a 3 (po stranach titulni casti bloku).
                     if current_block_id != linked_block_id:
                         current_block_cp_id = 8 + 2 * max(len(table.attributes), 1)
                         linked_block_cp_id = 8 + 2 * max(len(Table.get_table_by_id(id).attributes), 1)
