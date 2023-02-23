@@ -67,8 +67,6 @@ class Table:
     AUX_TABLE = 3
     # Kolekce nalezenych tabulek
     __tables__ = []
-    # # Kolekce tabulek s dosud nedoresenymi vazbami (typicky proto, ze po zpracovani odpovidajiciho statementu se jeste v SQL kodu nedoslo k definicim/aliasum vsech referencovanych (mezi-)tabulek)
-    # __tables_with_unresolved_dependencies__ = []
 
     def __init__(self, name=None, name_template=None, attributes=None, conditions=None, comment=None, source_sql=None, table_type=None):
         self.id = Table.__generate_id__()
@@ -84,7 +82,7 @@ class Table:
         self.conditions = []
         if conditions != None:
             self.conditions.extend(conditions)
-        self.uses_bind_vars = False
+        self.used_bind_vars = []
         # Typ tabulky musime nastavit pred nastavovanim komentare, jeliokz se podle toho ridi, zda rozdelovat ci nerozdelovat komentar na hlavni cast a podkomentar
         if (table_type == None
                 or (table_type != Table.STANDARD_TABLE
@@ -200,6 +198,34 @@ class Table:
             return True
         # Alias uz je ulozeny z drivejska, takze vratime False
         return False
+    
+    def uses_bind_vars(self) -> bool:
+        """Vraci true, pokud tabulka uziva bindovane promenne"""
+        return len(self.used_bind_vars) > 0
+    
+    def add_bind_var(self, var: str) -> bool:
+        """Prida bindovanou promennou do patricneho seznamu. Vraci logickou hodnotu udavajici uspesnost pozadovane operace."""
+        if var == None:
+            return False
+        var = var.strip()
+        if len(var) == 0:
+            return False
+        if var.startswith(":"):
+            var = var[1:]
+        if var in self.used_bind_vars:
+            return False
+        self.used_bind_vars.append(var)
+        return True
+    
+    def copy_bind_vars_to_table(self, target_table: "Table") -> None:
+        """Zkopiruje pouzite bindovane promenne ze seznamu u aktualni tabulky (self.used_bind_vars) do seznamu u cilove tabulky (target_table.used_bind_vars). Metoda nic nevraci."""
+        if target_table == None:
+            return
+        for var in self.used_bind_vars:
+            # Zde predpokladame, ze ve zdrojove kolekci jsou jen promenne s "pricetnymi" nazvy, cili muzeme rovnou aktualizovat cilovou kolekci namisto volani add_bind_var(...), kde by znovu probihaly veskere kontroly
+            if var in target_table.used_bind_vars:
+                continue
+            target_table.used_bind_vars.append(var)
     
     def copy_aliases_to_table(self, target_table: "Table") -> None:
         """Zkopiruje aliasy ze slovniku aktualni tabulky (self.statement_aliases) do slovnku cilove tabulky (target_table.statement_aliases). Metoda nic nevraci."""
@@ -647,9 +673,9 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
             or (only_save_dependencies and t.ttype in sql.T.Literal)):
         # Whitespace ani Punctuation nas nezajimaji, samotny Operator nebo Keyword taky nema smysl parsovat. Naopak Literal budeme parsovat v pripade, ze neukladame pouze zavislosti.
         return []
-    # Pokud jde o Placeholder, vratime fiktivni atribut (name == alias == comment == None, condition == Attribute.CONDITION_PLACEHOLDER_PRESENT), podle ktereho pak bude mozne nastavit flag u tabulky, resp. potazmo v generovanem diagramu barevne odlisit patricnou tabulku
+    # Pokud jde o Placeholder, vratime fiktivni atribut (name == alias == None, condition == Attribute.CONDITION_PLACEHOLDER_PRESENT, comment == nazev placeholderu), podle ktereho pak bude mozne nastavit flag u tabulky, resp. potazmo v generovanem diagramu barevne odlisit patricnou tabulku
     if t.ttype == sql.T.Name.Placeholder:
-        return [Attribute(name=None, alias=None, condition=Attribute.CONDITION_PLACEHOLDER_PRESENT, comment=None)]
+        return [Attribute(name=None, alias=None, condition=Attribute.CONDITION_PLACEHOLDER_PRESENT, comment=t.value)]
     # POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> BUG report ( https://github.com/andialbrecht/sqlparse/issues/700 ). Podobne je nekdy vracena funkce COUNT (a nejspis i jine funkce) -- nazev fce je vracen jako klicove slovo na konci Identifier (za carkou; resp. posledniho Identifieru v IdentifierList) a zavorka s parametry pak jako zacatek naledujiciho tokenu.
     # Bugy vyse prozatim obejdeme tak, ze pri zpracovavani vzdy overime posledni subtoken (Identifier WITHIN (vraceno jako Identifier), resp. Keyword s nazvem funkce -- pokud ano, je temer jiste, ze jde o zminenou situaci a posledni nalezeny atribut pak bude nekompletni (--> nastavime u nej condition na Attribute.CONDITION_SPLIT_ATTRIBUTE, podle cehoz pak v hlavnim kodu pozname, ze tento je nekompletni). Takovy nekompletni atribut pritom muze vzdy byt uveden pouze jako posledni ve vracenem seznamu atributu.
     split_attr_link = None
@@ -959,7 +985,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 attribute = attributes[j]
                 # Nejdrive zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba u hlavni tabulky aktualizovat patricny flag
                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                    table.uses_bind_vars = True
+                    table.add_bind_var(attribute.comment)
                     attributes.pop(j)
                     continue
                 if attribute.condition == Attribute.CONDITION_EXISTS_SELECT:
@@ -968,8 +994,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     exists_select_table = Table.get_table_by_id(id)
                     # Aliasy nalezene pri zpracovavani EXISTS SELECT (tyto byly ulozeny do slovniku patricne "exists-select" tabulky!) musime zkopirovat do slovniku aktualniho (nadrazeneho) SELECT
                     exists_select_table.copy_aliases_to_table(table)
-                    # Jestlize jsme v EXIST SELECT objevili placeholder(y), ma tato tabulka nastaveny patricny flag. Informaci vsak musime predat i do nadrazene tabulky (table)
-                    table.uses_bind_vars = table.uses_bind_vars or exists_select_table.uses_bind_vars
+                    # Jestlize jsme v EXIST SELECT objevili placeholder(y), musime je zkopirovat take do seznamu v nadrazene tabulce (table)
+                    exists_select_table.copy_bind_vars_to_table(table)
                     # Nakonec jeste odebereme fiktivni "EXISTS_SELECT" atribut z patricne kolekce
                     attributes.pop(j)
                 # Index muzeme zvysit bez ohledu na pripadne odstraneni atributu z kolekce (vyse), jelikoz fiktivni atribut je zde vzdy nasledovan jednim standardnim atributem se jmennou referenci na odpovidajici mezi-tabulku
@@ -1002,8 +1028,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             attribute = obj[j]
                             # Nejprve zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba aktualizovat flag jak u join_table (protoze u ni jsme placehoder nasli), tak u nadrazene tabulky (table)
                             if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                                join_table.uses_bind_vars = True
-                                table.uses_bind_vars = True
+                                join_table.add_bind_var(attribute.comment)
+                                table.add_bind_var(attribute.comment)
                                 obj.pop(j)
                                 continue
                             if attribute.condition == Attribute.CONDITION_EXISTS_SELECT:
@@ -1013,8 +1039,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 # Aliasy nalezene pri zpracovavani EXISTS SELECT (tyto byly ulozeny do slovniku patricne "exists-select" tabulky!) musime zkopirovat do slovniku aktualniho (nadrazeneho) SELECT
                                 exists_select_table.copy_aliases_to_table(table)
                                 # Jestlize jsme v EXIST SELECT objevili placeholder(y), ma tato tabulka nastaveny patricny flag. Informaci vsak musime predat i do join_table (ktera je EXIST SELECT nadrazena) a hlavni tabulky (table, nadrazena join_table)
-                                join_table.uses_bind_vars = join_table.uses_bind_vars or exists_select_table.uses_bind_vars
-                                table.uses_bind_vars = table.uses_bind_vars or exists_select_table.uses_bind_vars
+                                exists_select_table.copy_bind_vars_to_table(join_table)
+                                exists_select_table.copy_bind_vars_to_table(table)
                                 obj.pop(j)
                             # Index muzeme zvysit bez ohledu na pripadne odstraneni atributu z kolekce (vyse), jelikoz fiktivni atribut je zde vzdy nasledovan jednim standardnim atributem se jmennou referenci na odpovidajici mezi-tabulku
                             j += 1
@@ -1030,8 +1056,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         while j < len(obj):
                             attribute = obj[j]
                             if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                                union_table.uses_bind_vars = True
-                                table.uses_bind_vars = True
+                                union_table.add_bind_var(attribute.comment)
+                                table.add_bind_var(attribute.comment)
                                 obj.pop(j)
                                 continue
                             j += 1
@@ -1045,15 +1071,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             if attribute.condition == Attribute.CONDITION_DEPENDENCY:
                                 id = int(attribute.comment)
                                 table.link_to_table_id(id)
-                                # Krome svazani tabulek jeste potrebujeme (a) zkopirovat do hlavni tabulky zjistene aliasy a (b) prenest do hlavni tabulky informaci o pripadne pritomnosti placeholderu
+                                # Krome svazani tabulek jeste potrebujeme zkopirovat do hlavni tabulky (a) zjistene aliasy a (b) pripadne placeholdery
                                 subselect_table = Table.get_table_by_id(id)
                                 subselect_table.copy_aliases_to_table(table)
-                                table.uses_bind_vars = table.uses_bind_vars or subselect_table.uses_bind_vars
+                                subselect_table.copy_bind_vars_to_table(table)
                                 # Nakonec odebereme fiktivni atribut z kolekce obj (index j musi zustat beze zmeny)
                                 obj.pop(j)
                                 continue
                             if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                                table.uses_bind_vars = True
+                                table.add_bind_var(attribute.comment)
                                 # Fiktivni atribut musime odebrat z kolekce obj (index j zustava beze zmeny)
                                 obj.pop(j)
                                 continue
@@ -1234,7 +1260,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nyni zkontrolujeme, zda v kolekci atributu nezustal nejaky "TBD" (drive zkontrolovat neslo, protoze tokeny jsou nekdy v dusledku chyb v sqlparse umele rozdelene).
     for attribute in table.attributes:
         if attribute.condition == Attribute.CONDITION_TBD:
-            raise Exception(f"Počet aliasů atributů uvedených explicitně u tabulky {table.name} je větší než počet atributů vracených příkazem SELECT")
+            raise Exception(f"Počet aliasů atributů uvedených explicitně u tabulky {table.name} je větší než počet atributů vrácených v části SELECT")
     # Obsah sql_components se resetuje pri nalezeni SELECT, resp. JOIN. Pokud je SELECT v zavorkach ("SELECT ... FROM ( SELECT ... )"), obsahuje kolekce na konci jednu uzaviraci zavorku navic, kterou je pred ulozenim SQL kodu nutne odstranit.
     if len(sql_components) > 0 and sql_components[0].lower() == "select":
         if sql_components[-1] == ")":
@@ -1475,10 +1501,10 @@ if __name__ == "__main__":
         # Text je zobrazen vzdy cerne, ale samotne tabulky jsou barevne odlisene podle druhu
         # # Barva beznych tabulek (Table.STANDARD_TABLE)  # TODO: aktualne neni potreba
         # std_bg_color = "EEEEEE"
-        # Barva tabulek ve WITH (Table.WITH_TABLE) s .uses_bind_vars == False
+        # Barva tabulek ve WITH (Table.WITH_TABLE) s .uses_bind_vars() == False
         with_bg_color = "FEE79C"
-        # Barva tabulek ve WITH (Table.WITH_TABLE) s .uses_bind_vars == True
-        with_bind_bg_color = "C5C8FF"
+        # Barva obrysu tabulek ve WITH (Table.WITH_TABLE) s .uses_bind_vars() == True
+        with_bind_fg_color = "2E4DE6"
         # Barva SLECTu na nejvyssi urovni (Table.MAIN_SELECT)
         ms_bg_color = "EC6964"
         fDia = gzip.open(filename=fNamePrefix+".dia", mode="wb", compresslevel=9)
@@ -1627,23 +1653,24 @@ if __name__ == "__main__":
                          "      <dia:attribute name=\"line_width\">\n"
                          "        <dia:real val=\"0.10\"/>\n"
                          "      </dia:attribute>\n"
-                         "      <dia:attribute name=\"line_color\">\n"
-                         "        <dia:color val=\"#000000\"/>\n"
-                         "      </dia:attribute>\n"
-                         "      <dia:attribute name=\"fill_color\">\n"))
+                         "      <dia:attribute name=\"line_color\">\n"))
             # Vykreslujeme pouze tab. z WITH, resp. SELECT na nejvyssi urovni --> barvy lze nastavit obycejnym IF ... ELSE ...
-            if table.table_type == Table.WITH_TABLE:
-                if table.uses_bind_vars:
-                    bg_color = f"        <dia:color val=\"#{with_bind_bg_color}\"/>\n"
-                else:
-                    bg_color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            if table.uses_bind_vars():
+                color = f"        <dia:color val=\"#{with_bind_fg_color}\"/>\n"
             else:
-                bg_color = f"        <dia:color val=\"#{ms_bg_color}\"/>\n"
+                color = f"        <dia:color val=\"#000000\"/>\n"
+            code.append(color)
+            code.append(("      </dia:attribute>\n"
+                         "      <dia:attribute name=\"fill_color\">\n"))
+            if table.table_type == Table.WITH_TABLE:
+                color = f"        <dia:color val=\"#{with_bg_color}\"/>\n"
+            else:
+                color = f"        <dia:color val=\"#{ms_bg_color}\"/>\n"
             # elif table.table_type == Table.AUX_TABLE:
             #     bg_color = f"        <dia:color val=\"#{aux_bg_color}\"/>\n"
             # else:
             #     bg_color = f"        <dia:color val=\"#{std_bg_color}\"/>\n"
-            code.append(bg_color)
+            code.append(color)
             code.append(("      </dia:attribute>\n"
                          "      <dia:attribute name=\"text_color\">\n"
                          "        <dia:color val=\"#000000\"/>\n"
@@ -1705,6 +1732,10 @@ if __name__ == "__main__":
                     # Pridame pocatecni odrazku/hvezdicku (.join(...) tyto samozrejme prida jen mezi jednotlive atributy...)
                 attributes[0] = attributes[0]
                 code.append(generateDiaBlockAttrCode("Atributy", "\n".join(attributes)))
+            # Bindovane promenne
+            if table.uses_bind_vars():
+                table.used_bind_vars.sort()
+                code.append(generateDiaBlockAttrCode("Bindované proměnné", ", ".join(table.used_bind_vars)))
             # SQL kod
             if table.source_sql != None and len(table.source_sql) > 0:
                 code.append(generateDiaBlockAttrCode("SQL kód", table.source_sql))
