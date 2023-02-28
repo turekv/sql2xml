@@ -184,8 +184,8 @@ class Table:
             return []
         alias_collection = []
         for table in Table.__tables__:
-            if table.id in table.statement_aliases.keys():
-                aliases = table.statement_aliases[table.id]
+            if table_id in table.statement_aliases.keys():
+                aliases = table.statement_aliases[table_id]
                 for a in aliases:
                     if not a in alias_collection:
                         alias_collection.append(a)
@@ -305,7 +305,7 @@ class Table:
         if len(text) < max_snippet_length:
             return text
         else:
-            return text[:(max_snippet_length - 6)] + " [...]"
+            return text[:(max_snippet_length - 5)] + "[...]"
 
     @classmethod
     def get_table_by_name(cls, name: str, alias_table: "Table", match_attribute=None, exclude_table_id=-1) -> "Table":
@@ -510,18 +510,19 @@ def process_comparison(t: sql.Comparison) -> Attribute:
     # Hodnotu tokenu s operatorem si ulozime v uppercase verzi, jinak by napr. "in" bylo malymi pismeny
     operator = t.tokens[j].normalized.upper()
     # Teprve nyni se podivame, kolik subselectu jsme nasli pri zjistovani zavislosti. pokud byly dva, musel byt jeden na kazde strane operatoru, cili dalsi prochazeni t.tokens je uz zbytecne. Jinak rozhodneme pozdeji name a value.
-    parse_value = False
+    parse_value = True
     if len(subselect_names) == 1:
         # Nasli jsme jen jeden subselect
         if Attribute.is_standard_name(name):
             # Promenna name obsahuje pouze znaky povolene pro identifikatory, tzn. subselect (s mezerami, zavorkami atd.) musi byt napravo od operatoru
             value = subselect_names[0]
+            parse_value = False
         else:
             name = subselect_names[0]
-            parse_value = True
     elif len(subselect_names) == 2:
         name = subselect_names[0]
         value = subselect_names[1]
+        parse_value = False
     if parse_value:
         # Preskocime veskere bile znaky za operatorem...
         j += 1
@@ -962,7 +963,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             elif t.normalized == "OVER":
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
-                split_attribute = table.attributes[-1]
+                split_attribute = table.attributes.pop()
                 # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
                 split_attribute.comment = " OVER "
             elif (t.normalized == "ORDER BY"
@@ -1248,8 +1249,13 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Zavislosti: table --> join_table --> src_table
                         table.link_to_table_id(join_table.id)
                         join_table.link_to_table_id(obj.id)
+                        # Pripadne placeholdery musime zkopirovat i do join_table (kopirovani do table probehne nize)
+                        obj.copy_bind_vars_to_table(join_table)
                     else:
                         table.link_to_table_id(obj.id)
+                    # Do hlavni tabulky jeste potrebujeme zkopirovat (a) zjistene aliasy a (b) pripadne placeholdery
+                    obj.copy_aliases_to_table(table)
+                    obj.copy_bind_vars_to_table(table)
                 elif is_within == "with":  # and isinstance(obj, str):  # Neni potreba, metoda v kontextu WITH vraci vyhradne retezec (nanejvys prazdny)
                     # Resime blok WITH, kde navratovou hodnotou je pripadny komentar (byva vracen vzdy jako posledni sub-token, i kdyz se muze tykat az nasledujiciho tokenu). Ten si tedy ulozime a resetujeme token_counter.
                     comment_before = obj
@@ -1405,9 +1411,9 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
+        # source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
@@ -1598,34 +1604,6 @@ if __name__ == "__main__":
         # Posun dvou bloku vuci sobe (horiz./vert.)
         dx = w + 3
         dy = h + 3
-
-
-
-
-        # for table in Table.__tables__:
-        #     print(f"\n[{table.name} | ID {table.id}].linked_to_tables_id:\n  * stav pred: {table.linked_to_tables_id}")
-        #     # # Zkontrolujeme pouze ta ID, ktera byla v seznamu na zacatku (nema smysl kontrolovat ID, ktera do kolekce pripadne pridame, jelikoz by byla kontrolovana duplicitne)
-        #     # num_ids = len(table.linked_to_tables_id)
-        #     # i = 0
-        #     # while i < num_ids:
-        #     #     linked_table = Table.get_table_by_id(table.linked_to_tables_id[i])
-        #     for id in table.linked_to_tables_id:
-        #         linked_table = Table.get_table_by_id(id)
-        #         if linked_table.table_type == Table.AUX_TABLE:
-        #             j = 0
-        #             while j < len(linked_table.linked_to_tables_id):
-        #                 if linked_table.linked_to_tables_id[j] in table.linked_to_tables_id:
-        #                     linked_table.linked_to_tables_id.pop(j)
-        #                     continue
-        #                 j += 1
-        #             table.linked_to_tables_id.extend(linked_table.linked_to_tables_id)
-        #         # i += 1
-        #     print(f"  * STAV PO:   {table.linked_to_tables_id}")
-        #     # if redundant_link_found:
-        #     #     continue
-
-        
-
         
         # Budeme vykreslovat pouze tabulky z WITH/SELECT na nejvyssi urovni. Aby bylo mozne spravne pridat zavislosti, musime nejprve u kazde takove tabulky zjistit, jestli "oklikou" (pres mezi-tabulku/y) nezavisi na jine tabulce z WITH. Takove zavislosti si opet ulozime do slovniku, kde klicem bude ID tabulky a hodnotou seznam ID navazanych tabulek.
         primary_linked_ids = {}
@@ -1634,22 +1612,6 @@ if __name__ == "__main__":
             if (table.table_type == Table.WITH_TABLE
                     or table.table_type == Table.MAIN_SELECT):
                 primary_linked_ids[table.id] = get_primary_linked_ids(table, path=[])
-
-
-
-
-
-
-        # TODO: asi ukladat i cesty + potom u vicenasobnych vazeb kontrolovat, zda nejsou prvni a posledni "zastavka" po vychozim bloku, resp. pred koncovym blokem u obou cest stejne. Pokud ano, nejspis nas vazba nezajima (je duplicitni -- jen s "bifurkaci" a pozdejsim opetovnym sloucenim). JAK RESIT REKURZI?
-        # 
-        # --> NEJPRVE VYPSAT VSECHNY STAV. CESTY A ZKUSIT ANALYZOVAT RUCNE!
-
-
-
-
-
-
-
 
         # Nyni muzeme zacit "sazet" bloky na (jedinou) vrstvu v diagramu. Kod bloku budeme skladat postupne jako kolekci (aby slo snadno pouzivat f-strings) a az nakonec vse sloucime a zapiseme do souboru. Propojeni bloku pridame az pote, co budou veskere bloky v XML (k tomu si budeme do block_pos ukladat ID tabulek a jim odpovidajici pozice bloku).
         block_pos = {}
