@@ -103,9 +103,6 @@ class Table:
             table_type = Table.STANDARD_TABLE
         self.table_type = table_type
         self.set_comment(comment)
-        if source_sql != None:
-            # SQL kod taktez ulozime bez leading/trailing whitespaces
-            source_sql = source_sql.strip()
         self.source_sql = source_sql
         self.linked_to_tables_id = []
 
@@ -922,12 +919,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
     while t != None:
-        if t.ttype == sql.T.Punctuation:
+        if t.ttype == sql.T.Punctuation or t.is_whitespace:
             # Carku apod. pouze ulozime do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
             sql_components.append(t.value)
             join_components.append(t.value)
             union_components.append(t.value)
-            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
             continue
         # Jsme-li dva tokeny od posleniho komentare, muzeme resetovat comment_before (reset po jednom tokenu nelze, jelikoz jednim z nich muze byt carka mezi SQL bloky a komentar k takovemu bloku pak je typicky na radku pred touto carkou). Je take nutne vzit do uvahy can_reset_context -- pokud je False, vime, ze doslo k umelemu rozdeleni tokenu a reset comment_before nelze provest.
         if can_reset_context:
@@ -950,7 +947,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 join_components = []
                 # Pokud jsme doted resili UNION SELECT (tzn. pokud union_table != None), je nutne ke stavajici union_table pridat zdrojovy SQL kod a resetovat referenci na tabulku (UNION je totiz timto doreseny)
                 if union_table != None:
-                    union_table.source_sql = "\n".join(union_components).strip()
+                    union_table.source_sql = "".join(union_components)
                     union_table = None
             elif t.normalized == "ON":
                 is_within = "on"
@@ -958,7 +955,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 is_within = "union-select"
                 # Pokud jsme doted resili UNION SELECT (tzn. pokud union_table != None), je nutne ke stavajici union_table pridat zdrojovy SQL kod a resetovat referenci na tabulku (UNION je totiz timto doreseny)
                 if union_table != None:
-                    union_table.source_sql = "\n".join(union_components).strip()
+                    union_table.source_sql = "".join(union_components)
                     union_table = None
             elif t.normalized == "OVER":
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
@@ -973,11 +970,20 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     or t.normalized == "TO"
                     or t.normalized == "DEFAULT"
                     or t.normalized == "USING"):
-                # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime).
+                # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime). V SQL zdroji ale chceme zachovat veskere bile znaky...
                 sql_components.append(t.value)
                 join_components.append(t.value)
                 union_components.append(t.value)
-                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
+                while t.is_whitespace:  # Zde predpokladame, ze t != None (pokud t == None, je s SQL kodem neco spatne a stejne bychom museli parsovani prerusit...)
+                    sql_components.append(t.value)
+                    join_components.append(t.value)
+                    union_components.append(t.value)
+                    (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
+                sql_components.append(t.value)
+                join_components.append(t.value)
+                union_components.append(t.value)
+                (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
                 # Zaroven si poznacime, ze zatim nelze resetovat kontext, protoze jeste mohou nasledovat dalsi relevantni tokeny
                 can_reset_context = False
             elif t.normalized == "CONNECT":
@@ -986,13 +992,18 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     sql_components.append(t.value)
                     join_components.append(t.value)
                     union_components.append(t.value)
-                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
                 # Comparison si ulozime do kolekci
                 sql_components.append(t.value)
                 join_components.append(t.value)
                 union_components.append(t.value)
-                # Ted jeste overime, zda je nasl. token Literal, prip. zavorka. Pokud neni, preskocime na zacatek cyklu, jinak pokracujeme na konec cyklu (ulozeni hodnoty + nacteni noveho tokenu).
-                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                # Ted jeste overime, zda je nasl. non-whitespace token Literal, prip. zavorka. Pokud neni, preskocime na zacatek cyklu, jinak pokracujeme na konec cyklu (ulozeni hodnoty + nacteni noveho tokenu).
+                (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
+                while t.is_whitespace:  # Zde predpokladame, ze t != None (pokud t == None, je s SQL kodem neco spatne a stejne bychom museli parsovani prerusit...)
+                    sql_components.append(t.value)
+                    join_components.append(t.value)
+                    union_components.append(t.value)
+                    (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
                 if not (t.ttype in sql.T.Literal or isinstance(t, sql.Parenthesis)):
                     continue
             else:
@@ -1117,7 +1128,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Hodnotu tokenu si pridame to kolekce s komponentami zdrojoveho SQL kodu
                         join_components.append(t.value)
                         # Jelikoz nyni mame cely JOIN zpracovany, lze k mezi-tabulce priradit i ji odpovidajici SQL kod. Referenci na tabulku ale resetovat nesmime! (na rozdil od union_table, kde je toto potreba)
-                        join_table.source_sql = "\n".join(join_components).strip()
+                        join_table.source_sql = "".join(join_components)
                     elif is_within == "union-select":
                         # Podobne jako vyse u JOIN musime projit vracenou kolekci atributu a zkontrolovat, jestli mezi nimi nejsou fiktivni atributy indikujici pouziti placeholderu
                         j = 0
@@ -1261,8 +1272,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     comment_before = obj
                     token_counter = 0
             # Nyni musime jako prvni vec zkontrolovat, jestli nasledujici token neni s hodnotou "DATA", coz sqlparse oznaci za Keyword (pravdepodobne BUG). Pokud tomu tak je, jde o alias k predchozimu nazvu atributu nebo tabulky, ktery adekvatne priradime, ulozime stavajici token do kolekci, opravime hodnotu indexu (i) a promenne drzici token (t) a nacteme novy next_token.
-            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), resp. nenasleduje problematicke klicove slovo, ktere by zpusobilo vraceni vicero tokenu namisto jednoho, muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ...
-            (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+            # Dale, pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), resp. nenasleduje problematicke klicove slovo, ktere by zpusobilo vraceni vicero tokenu namisto jednoho, muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ... V SQL kodu chceme zachovat veskere bile znaky!
+            (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
+            while next_token != None and next_token.is_whitespace:
+                sql_components.append(t.value)
+                join_components.append(t.value)
+                union_components.append(t.value)
+                i = j
+                t = next_token
+                (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
             if next_token != None:
                 # Klicove slovo MATERIALIZE je vraceno jako Identifier!
                 if next_token.value.upper() == "MATERIALIZE":
@@ -1273,8 +1291,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     # Aktualizujeme index a akt. token
                     i = j
                     t = next_token
-                    # Nacteme novy next_token
-                    (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    # Nacteme novy next_token (chceme zachovat veskere bile znaky!)
+                    (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
+                    while next_token != None and next_token.is_whitespace:
+                        sql_components.append(t.value)
+                        join_components.append(t.value)
+                        union_components.append(t.value)
+                        i = j
+                        t = next_token
+                        (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
                     # Musime take zakazat reset kontextu
                     can_reset_context = False
                 if next_token.value.upper() == "DATA":  # Kontrolu typu tokenu (Keyword) preskocime, je zbytecna
@@ -1295,8 +1320,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     # Aktualizujeme index a akt. token
                     i = j
                     t = next_token
-                    # Nacteme novy next_token
-                    (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    # Nacteme novy non-whitespace next_token (chceme zachovat veskere bile znaky!)
+                    (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
+                    while next_token != None and next_token.is_whitespace:
+                        sql_components.append(t.value)
+                        join_components.append(t.value)
+                        union_components.append(t.value)
+                        i = j
+                        t = next_token
+                        (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
                 # Zde musime znovu zkontrolovat, zda i pripadny novy next_token neni None atd.
                 if next_token != None:
                     if next_token.value.upper() == "WITHIN":
@@ -1327,12 +1359,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         sql_components.append(t.value)
         join_components.append(t.value)
         union_components.append(t.value)
-        (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+        (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
     # Jestlize byl UNION SELECT na konci statementu, chybi u nej zatim SQL kod. Tento tedy nyni pridame.
     if union_table != None:
         if union_components[-1] == ")":
             union_components.pop()
-        union_table.source_sql = "\n".join(union_components).strip()
+        union_table.source_sql = "".join(union_components)
     # Nyni zkontrolujeme, zda v kolekci atributu nezustal nejaky "TBD" (drive zkontrolovat neslo, protoze tokeny jsou nekdy v dusledku chyb v sqlparse umele rozdelene). Pro podchyceni (primarne asi testovacich?) pripadu s blokem/y ve WITH, ale bez alespon jednoho hlavniho SELECT, musime kontrolovat, zda table neni None.
     if table != None:
         for attribute in table.attributes:
@@ -1342,14 +1374,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         if len(sql_components) > 0 and sql_components[0].lower() == "select":
             if sql_components[-1] == ")":
                 sql_components.pop()
-            table.source_sql = "\n".join(sql_components).strip()
+            table.source_sql = "".join(sql_components)
 
 
 def text_to_dia(text: str) -> str:
     """Vrati text ve tvaru vhodnem pro vlozeni do .dia"""
     if text != None and len(text) > 0:
         # Pocatecni a koncove bile znaky orezeme
-        return text.lstrip(" \n\t").rstrip(" \n\t").replace("<", "&lt;").replace(">", "&gt;")
+        return text.replace("<", "&lt;").replace(">", "&gt;")
     return ""
 
 
@@ -1411,9 +1443,9 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
+        # source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
