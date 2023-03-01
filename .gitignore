@@ -8,7 +8,7 @@ __pycache__/
 
 # Testovací soubory
 test-files/
-dia-custom-shapes/
+*.bat
 
 # Distribution / packaging
 .Python

@@ -42,7 +42,7 @@ class Attribute:
             self.short_name = name[(name.rfind(".") + 1):]
         else:
             self.short_name = None
-    
+
     @classmethod
     def is_standard_name(cls, name: str) -> bool:
         """Vrati logickou hodnotu udavajici, zda zadane jmeno splnuje podminky Oracle DB pro pouziti jako identifikator"""
@@ -62,7 +62,7 @@ class Attribute:
             self.comment = None
             return
         self.comment = comment
-        
+
 
 
 class Table:
@@ -176,7 +176,7 @@ class Table:
         subcomment = Table.__trim_to_length__(self.subcomment)
         source_sql = Table.__trim_to_length__(self.source_sql)
         return f"TABULKA {self.name} (ID {self.id})\n{indent}Všechny známé aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}Podkomentář:\n{indent}{indent}\"{subcomment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
-    
+
     @classmethod
     def get_all_known_aliases(cls, table_id: int) -> list:
         """Vraci vsechny zname aliasy tabulky se zadanym ID"""
@@ -190,7 +190,7 @@ class Table:
                     if not a in alias_collection:
                         alias_collection.append(a)
         return alias_collection
-    
+
     @classmethod
     def add_alias(cls, alias_table: "Table", table_id: int, alias: str) -> bool:
         """Ulozi statement alias (slovnik aliasu je ulozen v alias_table) tabulky s ID == table_id. Vraci logickou hodnotu vyjadrujici uspesnost pozadovane operace."""
@@ -209,11 +209,11 @@ class Table:
             return True
         # Alias uz je ulozeny z drivejska, takze vratime False
         return False
-    
+
     def uses_bind_vars(self) -> bool:
         """Vraci True, pokud tabulka uziva bindovane promenne"""
         return len(self.used_bind_vars) > 0
-    
+
     def add_bind_var(self, var: str) -> bool:
         """Prida bindovanou promennou do patricneho seznamu. Vraci logickou hodnotu udavajici uspesnost pozadovane operace."""
         if var == None:
@@ -227,7 +227,7 @@ class Table:
             return False
         self.used_bind_vars.append(var)
         return True
-    
+
     def copy_bind_vars_to_table(self, target_table: "Table") -> None:
         """Zkopiruje pouzite bindovane promenne ze seznamu u aktualni tabulky (self.used_bind_vars) do seznamu u cilove tabulky (target_table.used_bind_vars). Metoda nic nevraci."""
         if target_table == None:
@@ -237,7 +237,7 @@ class Table:
             if var in target_table.used_bind_vars:
                 continue
             target_table.used_bind_vars.append(var)
-    
+
     def copy_aliases_to_table(self, target_table: "Table") -> None:
         """Zkopiruje aliasy ze slovniku aktualni tabulky (self.statement_aliases) do slovnku cilove tabulky (target_table.statement_aliases). Metoda nic nevraci."""
         if target_table == None:
@@ -250,7 +250,7 @@ class Table:
                 for a in additional_aliases:
                     if not a in current_aliases:
                         current_aliases.append(a)
-    
+
     def set_comment(self, comment: str) -> None:
         """Zadany retezec rozdeli na hlavni komentar a podkomentar a oboji ulozi k tabulce. Metoda nic nevraci."""
         if comment == None:
@@ -292,7 +292,7 @@ class Table:
             return None
         else:
             return " ".join(text.split())
-    
+
     @classmethod
     def __trim_to_length__(cls, text: str, max_snippet_length=None) -> str:
         """Zkrati zadany text na max_snippet_length == 50 znaku, prip. vrati puvodni text, pokud byl kratsi. Veskera zalomeni radku, vicenasobne bile znaky apod. jsou zaroven nahrazeny jednotlivymi mezerami."""
@@ -408,7 +408,7 @@ class Table:
             return False
         self.linked_to_tables_id.append(id)
         return True
-    
+
 
 def is_comment(t: sql.Token) -> bool:
     """Vraci True/false podle toho, zda zadany token je SQL komentarem (tridu nestaci srovnavat jen s sql.Comment!)"""
@@ -1411,9 +1411,9 @@ if __name__ == "__main__":
         # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
-        # source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
+        source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
@@ -1426,7 +1426,6 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__REKURZE__utf-8-sig.sql"
         # encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -1494,7 +1493,7 @@ if __name__ == "__main__":
         for table in Table.__tables__:
             # Jmena tabulek z DB si pouze ulozime do kolekce pro potreby pozdejsiho vypisu seznamu
             if table.table_type == Table.STANDARD_TABLE:
-                std_table_collection.append(f"    – {table.name}")
+                std_table_collection.append(f"    * {table.name}")
             output = f"{table}\n"
             # # DEBUG: vypisy zatim zakazeme, aby slo lepe sledovat potencialne problematicka klicova slova
             # # Do konzoly vypiseme tabulky z WITH, mezi-tabulky vypisovat nebudeme
@@ -1504,10 +1503,11 @@ if __name__ == "__main__":
             fTxt.write(output + "\n")
 
         if len(std_table_collection) > 0:
+            std_table_collection.sort()
             print("\nTento SQL dotaz používá následující tabulky z DB:\n" + "\n".join(std_table_collection) + "\n")
         else:
             print("\nTento SQL dotaz nepoužívá žádné tabulky z DB.\n")
-        
+
         # # Bloky a vazby mezi nimi ulozime v XML formatu kompatibilnim s aplikaci Dia ( https://wiki.gnome.org/Apps/Dia )
         header = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
                   "<dia:diagram xmlns:dia=\"http://www.lysator.liu.se/~alla/dia/\">\n"
@@ -1604,7 +1604,7 @@ if __name__ == "__main__":
         # Posun dvou bloku vuci sobe (horiz./vert.)
         dx = w + 3
         dy = h + 3
-        
+
         # Budeme vykreslovat pouze tabulky z WITH/SELECT na nejvyssi urovni. Aby bylo mozne spravne pridat zavislosti, musime nejprve u kazde takove tabulky zjistit, jestli "oklikou" (pres mezi-tabulku/y) nezavisi na jine tabulce z WITH. Takove zavislosti si opet ulozime do slovniku, kde klicem bude ID tabulky a hodnotou seznam ID navazanych tabulek.
         primary_linked_ids = {}
         for table in Table.__tables__:
@@ -1685,7 +1685,7 @@ if __name__ == "__main__":
                          "        <dia:boolean val=\"false\"/>\n"
                          "      </dia:attribute>\n"
                          "      <dia:attribute name=\"line_width\">\n"
-                         "        <dia:real val=\"0.10\"/>\n"
+                         "        <dia:real val=\"0.1\"/>\n"
                          "      </dia:attribute>\n"
                          "      <dia:attribute name=\"line_color\">\n"))
             # Vykreslujeme pouze tab. z WITH, resp. SELECT na nejvyssi urovni --> barvy lze nastavit obycejnym IF ... ELSE ...
@@ -1761,12 +1761,12 @@ if __name__ == "__main__":
                 for attr in table.attributes:
                     name = Table.__trim_to_length__(attr.name)
                     if attr.alias != None:
-                        attributes.append(f"– {name} :: {attr.alias}")
+                        attributes.append(f"{name} as {attr.alias}")
                     else:
-                        attributes.append(f"– {name}")
+                        attributes.append(f"{name}")
                     # Pridame pocatecni odrazku/hvezdicku (.join(...) tyto samozrejme prida jen mezi jednotlive atributy...)
                 attributes[0] = attributes[0]
-                code.append(generateDiaBlockAttrCode("Atributy", "\n".join(attributes)))
+                code.append(generateDiaBlockAttrCode("Sloupce", "\n".join(attributes)))
             # Bindovane promenne
             if table.uses_bind_vars():
                 table.used_bind_vars.sort()
@@ -1791,7 +1791,7 @@ if __name__ == "__main__":
                 i = 0
                 x = x0
                 y += dy
-        
+
         # Po vlozeni vsech bloku muzeme pridat propojeni mezi nimi (priblizne souradnice budeme dopocitavat na zaklade pozic bloku)
         for table in Table.__tables__:
             # Opet preskocime vsechny tabulky, ktere nejsou primo z WITH bloku/SELECTy na nejvyssi urovni
@@ -1831,16 +1831,13 @@ if __name__ == "__main__":
                                  "        <dia:int val=\"1\"/>\n"
                                  "      </dia:attribute>\n"
                                  "      <dia:attribute name=\"end_arrow\">\n"
-                                 "        <dia:enum val=\"2\"/>\n"
+                                 "        <dia:enum val=\"22\"/>\n"
                                  "      </dia:attribute>\n"
                                  "      <dia:attribute name=\"end_arrow_length\">\n"
                                  "        <dia:real val=\"0.5\"/>\n"
                                  "      </dia:attribute>\n"
                                  "      <dia:attribute name=\"end_arrow_width\">\n"
                                  "        <dia:real val=\"0.5\"/>\n"
-                                 "      </dia:attribute>\n"
-                                 "      <dia:attribute name=\"corner_radius\">\n"
-                                 "        <dia:real val=\"1\"/>\n"
                                  "      </dia:attribute>\n"
                                  "      <dia:connections>\n"))
                     # Sipky chceme opacne, nez je zvykem v UML
@@ -1866,6 +1863,11 @@ if __name__ == "__main__":
         fDia.write(bytes(footer, "UTF-8"))
     except:
         print("\nDOŠLO K CHYBĚ:\n\n" + traceback.format_exc())
+
+        # DEBUG
+        with open(fNamePrefix + "_CHYBA.txt", mode="w", encoding="utf-8") as error_file:
+            error_file.write(traceback.format_exc())
+
         exit_code = 1
     finally:
         if fTxt != None:
