@@ -121,7 +121,7 @@ class Table:
             attribute_collection = []
             for attr in self.attributes:
                 if attr.alias != None:
-                    alias = f" (alias: {attr.alias})"
+                    alias = f" as {attr.alias}"
                 else:
                     alias = ""
                 if attr.comment != None and len(attr.comment) > 0:
@@ -144,7 +144,7 @@ class Table:
                 else:
                     condition = ""
                 if attr.alias != None:
-                    alias = f" (alias: {attr.alias})"
+                    alias = f" as {attr.alias}"
                 else:
                     alias = ""
                 if attr.comment != None and len(attr.comment) > 0:
@@ -172,7 +172,7 @@ class Table:
         comment = Table.__trim_to_length__(self.comment)
         subcomment = Table.__trim_to_length__(self.subcomment)
         source_sql = Table.__trim_to_length__(self.source_sql)
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Všechny známé aliasy:\n{indent}{indent}{aliases}\n{indent}Atributy:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}Podkomentář:\n{indent}{indent}\"{subcomment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Všechny známé aliasy:\n{indent}{indent}{aliases}\n{indent}Sloupce:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}Podkomentář:\n{indent}{indent}\"{subcomment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
 
     @classmethod
     def get_all_known_aliases(cls, table_id: int) -> list:
@@ -625,39 +625,56 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 name = token.value
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                operator = token.normalized
-                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                if operator == "IS":
-                    value = token.normalized
-                    attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
-                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                    if is_comment(token):
-                        # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci atributu, cili nas zajima jeho pocatecni cast
-                        comment = split_comment(token)[0]
+                # Viz BUG popsany nize, zde lze narazit na situaci (a)
+                if isinstance(token, sql.Comparison):
+                    # token.tokens[0] obsahuje zbytek leve strany podminky, pak je nutne postupovat v token.tokens analogicky kodu nize. Aktualizovat potom budeme posledni standardni (name != None) atribut z rekurzivne zpracovaneho tokenu.
+                    attr = get_attribute_conditions(token)
+                    for j in range(len(attr) - 1, -1, -1):
+                        if attr[j].name != None:
+                            break
+                    attr[j].name = name + " " + attr[j].name
+                    attributes.extend(attr)
                 else:
-                    components = []
-                    while token != None and len(components) < 3:
-                        if is_comment(token):
+                    operator = token.normalized
+                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                    if operator == "IS":
+                        value = token.normalized
+                        attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+                        (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                        if token != None and is_comment(token):
                             # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci atributu, cili nas zajima jeho pocatecni cast
                             comment = split_comment(token)[0]
-                        else:
-                            # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl). Ukladame vsak .normalized, cimz dojde k orezani pripadnych internich komentaru.
-                            attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
-                            # Nasli jsme v podmince subselect?
-                            if len(attributes) > 0 and attributes[-1].condition == Attribute.CONDITION_SUBSELECT_NAME:
-                                components.append(attributes[-1].comment)
-                                attributes.pop()
+                    else:
+                        components = []
+                        while token != None and len(components) < 3:
+                            if is_comment(token):
+                                # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci atributu, cili nas zajima jeho pocatecni cast
+                                comment = split_comment(token)[0]
                             else:
-                                components.append(token.normalized)
-                        (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                    # Jeste musime snizit index (i), abychom nepreskocili aktualni token, ktery muze byt podstatny
-                    i -= 1
-                    value = " ".join(components)
-                attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+                                # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl). Ukladame vsak .normalized, cimz dojde k orezani pripadnych internich komentaru.
+                                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+                                # Nasli jsme v podmince subselect?
+                                if len(attributes) > 0 and attributes[-1].condition == Attribute.CONDITION_SUBSELECT_NAME:
+                                    components.append(attributes[-1].comment)
+                                    attributes.pop()
+                                else:
+                                    components.append(token.normalized)
+                            (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                        # Jeste musime snizit index (i), abychom nepreskocili aktualni token, ktery muze byt podstatny. Toto ale lze udelat jen v pripade, ze i != None (nenasleduje-li zadny dalsi token, je metodou token_next(...) vraceno (None, None)!)
+                        if i != None:
+                            i -= 1
+                        value = " ".join(components)
+                    attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+            elif token.ttype in sql.T.Literal and len(attributes) > 0:
+                # BUG v sqlparse: Pokud podminka obsahuje napr. artimetickou operaci a patricny operator neni od cisla oddelen mezerou, jsou tokeny vraceny spatne. Priklady:
+                #   (a) "tab.col -1 = tab2.col" --> 2 tokeny: "tab.col" (Identifier), "-1 = tab2.col" (Comparison)
+                #   (b) "tab.col = tab2.col +1" --> 2 tokeny: "tab.col = tab2.col" (Comparison), "+1" (Literal)
+                # Zde jsme narazili na pripad (b), kde staci u posledniho atributu aktualizovat podminku.
+                attributes[-1].condition += " " + token.value
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
                 # Jde o obycejny atribut (prip. jejich vycet)
                 attributes.extend(get_attribute_conditions(token))
-            # Nakonec musime prejit na dalsi token
+            # Nakonec musime prejit na dalsi token (zde neni nutne kontrolovat, i != None (tzn. zda jsme uz na konci), protoze v takovem pripade je rovnou vraceno (None, None) a cyklus tedy standardne opustime podminkou ve WHILE)
             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
         return attributes
 
@@ -1445,11 +1462,11 @@ if __name__ == "__main__":
         # DEBUG
         # source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
         # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
+        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
         # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
         # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        encoding = "utf-8"
+        # encoding = "utf-8"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
         # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
         # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
@@ -1458,7 +1475,12 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
-        # encoding = "utf-8-sig"
+        # source_sql = "./test-files/Zav_prace_predb_zad_garanta.sql"
+        # source_sql = "./test-files/_Funkce_Table_2_Row_ListAgg.sql"
+        # source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze_test.sql"
+        source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze.sql"
+        # source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze_clean.sql"
+        encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
         # encoding = "ansi"
@@ -1536,9 +1558,11 @@ if __name__ == "__main__":
 
         if len(std_table_collection) > 0:
             std_table_collection.sort()
-            print("\nTento SQL dotaz používá následující tabulky z DB:\n" + "\n".join(std_table_collection) + "\n")
+            output = "\nTento SQL dotaz používá následující tabulky z DB:\n" + "\n".join(std_table_collection) + "\n"
         else:
-            print("\nTento SQL dotaz nepoužívá žádné tabulky z DB.\n")
+            output = "\nTento SQL dotaz nepoužívá žádné tabulky z DB.\n"
+        print(output)
+        fTxt.write(output)
 
         # # Bloky a vazby mezi nimi ulozime v XML formatu kompatibilnim s aplikaci Dia ( https://wiki.gnome.org/Apps/Dia )
         header = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
