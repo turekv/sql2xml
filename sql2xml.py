@@ -621,7 +621,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     # Jde o komentar k poslednimu nalezenemu atributu
                     attributes[-1].set_comment(token.value.strip())
             elif token.ttype == sql.T.Keyword and token.normalized == "EXISTS":
-                # Typicky pripad: "JOIN ... ON ( attr = value AND EXISTS ( ... ) AND ... )" --> postupujeme identicky situaci WHERE EXISTS
+                # Typicky pripad: "JOIN ... ON ( attr = value AND EXISTS ( ... ) AND ... )"
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                 while token != None:
                     if is_comment(token):
@@ -639,6 +639,16 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         process_statement(token, exists_table)
                         break
                     (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+            elif isinstance(token, sql.Function) and token.tokens[0].value.upper() == "EXISTS":
+                # Situace podobna pripadu vyse, avsak zde SQL kod obsahuje "EXISTS( ... )" (tzn. mezi "EXISTS" a "(" neni mezera) --> token je nyni typu Function a zpracovani je nutne provest malinko jinak!
+                exists_table = Table(name_template="exists-select", comment=comment_before, table_type=Table.AUX_TABLE)
+                Table.__tables__.append(exists_table)
+                # Nove vytvorenou mezi-tabulku jeste musime svazat s hlavni tabulkou --> pridame fiktivni atribut (name == alias == None, condition == Attribute.CONDITION_EXISTS_SELECT, comment == ID exists_table)
+                attributes.append(Attribute(name=None, alias=None, condition=Attribute.CONDITION_EXISTS_SELECT, comment=str(exists_table.id)))
+                # Krome ID mezitabulky predame do hlavniho kodu take informaci o podmince (= jmennou referenci na exists_table vc. pripadneho komentare)
+                attributes.append(Attribute(name=f"<{exists_table.name}>", alias=None, condition=None, comment=comment_before))
+                # Zavorku -- ulozenou v token.tokens[1] -- nyni zpracujeme jako standardni statement s tim, ze parametrem predame referenci na vytvorenou mezi-tabulku (veskere pripadne zavislosti budou dohledany rekurzivne v process_statement(...))
+                process_statement(token.tokens[1], exists_table)
             elif isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
                 # Nasledujici tokeny v t.tokens budeme prochazet tak dlouho, nez ziskame jednu kompletni podminku. Toto nelze resit rekurzivne opetovnym volanim get_attribute_conditions(...), protoze tokeny musime prochazet na stavajici urovni (token \in t.tokens), nikoliv o uroven nize (token.tokens)
                 # Pripadne zavislosti je nutne dohledavat prubezne, jelikoz postupne nacitame dalsi tokeny!
@@ -1657,7 +1667,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Evidence_chybne_poradi_oprava_01_mazani.sql"
         # source_sql = "./test-files/FIT_registrace_predmetu.sql"
         # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
-        source_sql = "./test-files/FIT_Uroven_jazyka_puvodni.sql"
+        # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
+        source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
