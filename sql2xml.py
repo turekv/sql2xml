@@ -25,6 +25,8 @@ class Attribute:
     CONDITION_PLACEHOLDER_PRESENT = "PLACEHOLDER_PRESENT"
     # Atribut neni kompletni (typicky v dusledku chybneho rozdeleni tokenu na vice casti -- chyby v sqlparse)
     CONDITION_SPLIT_ATTRIBUTE = "SPLIT_ATTRIBUTE"
+    # Atribut obsahujici literal neni kompletni (typicky v dusledku chybneho rozdeleni tokenu na vice casti -- chyby v sqlparse)
+    CONDITION_SPLIT_ATTRIBUTE_LITERAL = "SPLIT_ATTRIBUTE_LITERAL"
     # Atribut z bloku ve WITH, u ktereho dopredu zname pouze alias ("WITH table(attr_alias_1, attr_alias_2, ...) AS ..."")
     CONDITION_TBD = "TO_BE_DETERMINED"
 
@@ -52,8 +54,9 @@ class Attribute:
     @classmethod
     def is_standard_name(cls, name: str) -> bool:
         """Vrati logickou hodnotu udavajici, zda zadane jmeno splnuje podminky Oracle DB pro pouziti jako identifikator"""
-        # V Oracle DB jsou pro nazvy povolene alfanumericke znaky, podtrzitka, dolar a mrizka, pricemz dva posledni uvedene znaky by se pokud mozno nemely uzivat. Kromě techto znaku je nutne povolit i tecku (oddelovac: schema.tabulka.atribut).
-        return re.match("^[a-zA-Z0-9_\\.\\$#]+$", name) != None
+        # V Oracle DB jsou pro nazvy povolene alfanumericke znaky, podtrzitka, dolar a mrizka, pricemz dva posledni uvedene znaky by se pokud mozno nemely uzivat. Kromě techto znaku je nutne povolit i tecku (oddelovac: schema.tabulka.atribut). Zaroven nesmi jit o pouhou sadu cislic, coz by byl ciselny Literal, kde nema smysl nastavovat kratke jmeno.
+        return not (re.match("^[a-zA-Z0-9_\\.\\$#]+$", name) == None
+                or re.match("^[0-9]+$", name) != None)
 
     def set_comment(self, comment: str) -> None:
         """Nastavi komentar u atributu"""
@@ -803,7 +806,7 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
     # POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> BUG report ( https://github.com/andialbrecht/sqlparse/issues/700 ). Podobne je nekdy vracena funkce COUNT (a nejspis i jine funkce) -- nazev fce je vracen jako klicove slovo na konci Identifier (za carkou; resp. posledniho Identifieru v IdentifierList) a zavorka s parametry pak jako zacatek naledujiciho tokenu.
     # Bugy vyse prozatim obejdeme tak, ze pri zpracovavani vzdy overime posledni subtoken (Identifier WITHIN (vraceno jako Identifier), resp. Keyword s nazvem funkce -- pokud ano, je temer jiste, ze jde o zminenou situaci a posledni nalezeny atribut pak bude nekompletni (--> nastavime u nej condition na Attribute.CONDITION_SPLIT_ATTRIBUTE, podle cehoz pak v hlavnim kodu pozname, ze tento je nekompletni). Takovy nekompletni atribut pritom muze vzdy byt uveden pouze jako posledni ve vracenem seznamu atributu.
     split_attr_link = None
-    # Zde musime znovu vyloucit Literal, protoze ty si sice mozna chceme ulozit, ale samy o sobe urcite nejsou rozdelene (+ u nich ani neni definovan objekt t.tokens, cili bychom stejne potkali neosetrenou vyjimku)
+    # Literal nema .tokens, takze ho musime vyloucit...
     if not (only_save_dependencies or t.ttype in sql.T.Literal) and t.tokens != None:
         last_nonws_token = get_last_nonws_token(t.tokens)
         if isinstance(last_nonws_token, sql.Identifier) and last_nonws_token.value.lower() == "within":
@@ -811,6 +814,9 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
             split_attr_link = " WITHIN GROUP "
         elif last_nonws_token.ttype == sql.T.Keyword:
             split_attr_link = ""
+        elif last_nonws_token.ttype in sql.T.Literal:
+            # Pokud je posledni non-whitespace subtoken typu Keyword nebo Literal, je pravdepodobne, ze vlivem BUGu v sqlparse doslo k umelemu rozdeleni vyctu atributu na vice tokenu (u Literalu napr. v situaci "SELECT ..., Literal alias", tzn. kdyz mezi Literalem a aliasem NENI "AS").
+            split_attr_link = "-- LITERAL --"
     attributes = []
     if isinstance(t, sql.IdentifierList):
         # Jednotlive tokeny projdeme a zpracujeme. Parametr only_save_dependencies pritom musime nastavit podle jeho aktualni hodnoty.
@@ -891,7 +897,10 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
         attributes.append(Attribute(name=t.normalized))
     # Nakonec jeste nastavime condition na Attribute.CONDITION_SPLIT_ATTRIBUTE a comment na patricny spojovaci retezec, pokud je posledni atribut nekompletni
     if split_attr_link != None:
-        attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
+        if split_attr_link == "-- LITERAL --":
+            attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL
+        else:
+            attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
         # U fiktivniho atributu musime komentar s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set_comment(...)!
         attributes[-1].comment = split_attr_link
     return attributes
@@ -1064,6 +1073,16 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni context
             if t.normalized == "FROM":
                 context = "from"
+                # Musime jeste overit, jestli nemame ulozeny nejaky rozdeleny atribut s Literalem (tento mohl byt na konci seznamu bez aliasu, tzn. byl by docasne ve split_attribute a v tabulce by zatim chybel). V takovem pripade nastavime comment = condition = None a atribut pridame do patricne tabulky (table, resp. union_table).
+                if split_attribute != None:
+                    split_attribute.comment = None
+                    split_attribute.condition = None
+                    if union_table != None:
+                        union_table.attributes.append(split_attribute)
+                    else:
+                        table.attributes.append(split_attribute)
+                    # Nakonec resetujeme promennou split_attribute
+                    split_attribute = None
             elif "JOIN" in t.normalized:
                 context = "join"
                 # Zde musime krome nastaveni kontextu navic resetovat join_components
@@ -1272,44 +1291,45 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             join_components.append(t.value)
                             # Jelikoz nyni mame cely JOIN zpracovany, lze k mezi-tabulce priradit i ji odpovidajici SQL kod. Referenci na tabulku ale resetovat nesmime! (na rozdil od union_table, kde je toto potreba). Na rozdil od [UNION] SELECT take nemusime z kolekce join_components odebirat koncove bile znaky/uzaviraci zavorku, protoze tyto se v kolekci nenachazi.
                             join_table.source_sql = "".join(join_components)
-                        elif context == "union-select":
-                            # Podobne jako vyse u JOIN musime projit vracenou kolekci atributu a zkontrolovat, jestli mezi nimi nejsou fiktivni atributy indikujici pouziti placeholderu
-                            j = 0
-                            while j < len(obj):
-                                attribute = obj[j]
-                                if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                                    union_table.add_bind_var(attribute.comment)
-                                    table.add_bind_var(attribute.comment)
-                                    obj.pop(j)
-                                    continue
-                                j += 1
-                            # Resime-li UNION SELECT, staci pridat nalezene autributy k mezi-tabulce reprezentujici danou cast kodu
-                            union_table.attributes.extend(obj)
-                        elif context == "select":
+                        elif "select" in context:
                             # Projdeme vraceny seznam, ktery muze obsahovat fiktivni atributy s ID tabulek (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_DEPENDENCY; comment == ID tabulky), na nichz zavisi aktualne resena tabulka (typicky scenar: namisto obycejneho atributu je v SELECT uveden dalsi SELECT)
                             j = 0
                             while j < len(obj):
                                 attribute = obj[j]
                                 if attribute.condition == Attribute.CONDITION_DEPENDENCY:
                                     id = int(attribute.comment)
-                                    table.link_to_table_id(id)
-                                    # Krome svazani tabulek jeste potrebujeme zkopirovat do hlavni tabulky (a) zjistene aliasy a (b) pripadne placeholdery
                                     subselect_table = Table.get_table_by_id(id)
+                                    if union_table != None:
+                                        union_table.link_to_table_id(id)
+                                        # Krome svazani tabulek jeste potrebujeme zkopirovat do union_table (a) zjistene aliasy a (b) pripadne placeholdery
+                                        subselect_table.copy_aliases_to_table(union_table)
+                                        subselect_table.copy_bind_vars_to_table(union_table)
+                                    else:
+                                        table.link_to_table_id(id)
+                                    # Zjistene aliasy a pripadne placeholdery je potreba zkopirovat i do hlavni tabulky
                                     subselect_table.copy_aliases_to_table(table)
                                     subselect_table.copy_bind_vars_to_table(table)
                                     # Nakonec odebereme fiktivni atribut z kolekce obj (index j musi zustat beze zmeny)
                                     obj.pop(j)
                                     continue
                                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
+                                    if union_table != None:
+                                        union_table.add_bind_var(attribute.comment)
                                     table.add_bind_var(attribute.comment)
                                     # Fiktivni atribut musime odebrat z kolekce obj (index j zustava beze zmeny)
                                     obj.pop(j)
                                     continue
                                 j += 1
                             # Dale musime zkontrolovat, jestli nemame ze zpracovavani minuleho tokenu nekomplentni atribut (BUG: WITHIN GROUP apod.). Pokud ne, zkontrolujeme posledni nyni vraceny atribut, zda nahodou neni takovym objektem. Jestlize naopak nekompletni atribut mame, sloucime ho s prvnim nyni vracenym atributem (ktery nasledne odebereme z obj) a takto vznikly kompletni atribut pridame k tabulce. Zde nelze rovnou resetovat split_attribute, jelikoz i zde muze byt posledni atribut opet nekompletni...
+                            # Ve zbylem kodu pro zpracovani vracenych atributu (vc. pripadneho nekompletniho z minula) uz budeme pracovat jen s aktualne resenou tabulkou (at uz pujde o table, nebo union_table). Pro zjednoduseni kodu tedy pouzijeme novou promennou obsahujici referenci na patricnou tabulku.
+                            if union_table != None:
+                                target_table = union_table
+                            else:
+                                target_table = table
                             if split_attribute == None:
                                 # "Rozdeleny" atribut je v kolekci obj vzdy jako posledni --> index == -1
-                                if obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE:
+                                if (obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE
+                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL):
                                     split_attribute = obj.pop()
                             else:
                                 # Zbytek rozdeleneho atributu je hned na zacatku kolekce
@@ -1320,48 +1340,55 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     attr_link.pop()
                                     # Komentar musime nastavit primo (mezery!), nikoliv pomoci set-comment(...)
                                     split_attribute.comment = " " + " ".join(attr_link) + " "
-                                split_attribute.set_name(f"{split_attribute.name}{split_attribute.comment}{attr_remainder.name}")
-                                split_attribute.alias = attr_remainder.alias
+                                if split_attribute.condition == Attribute.CONDITION_SPLIT_ATTRIBUTE:
+                                    # Standardni rozdeleny atribut
+                                    split_attribute.set_name(f"{split_attribute.name}{split_attribute.comment}{attr_remainder.name}")
+                                    split_attribute.alias = attr_remainder.alias
+                                else:
+                                    # Rozdeleny atribut s Literalem
+                                    split_attribute.alias = attr_remainder.name
                                 split_attribute.condition = attr_remainder.condition
                                 # Tady by nejspis take slo vzit komentar tak, jak je, ale pro poradek vyuzijeme set_comment(...)
                                 split_attribute.set_comment(attr_remainder.comment)
-                                table.attributes.append(split_attribute)
-                                if len(obj) > 0 and obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE:
+                                target_table.attributes.append(split_attribute)
+                                if (len(obj) > 0
+                                        and (obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE
+                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL)):
                                     split_attribute = obj.pop()
                                 else:
                                     split_attribute = None
                             # Nakonec k tabulce pridame atributy zbyle v obj (musime ale zohlednit pripadnou znalost aliasu!)
                             if known_attribute_aliases:
-                                # Zde resime blok ve WITH, u ktereho byly za nazvem docasne tabulky uvedeny aliasy (alespon nekterych) atributu. Predchystane ("TBD") atributy ale nelze primo aktualizovat, protoze v dusledku chyb v sqlparse mohlo dojit k umelemu rozdleni tokenu, tzn. zatim nemusime mit k dispozici kompletni sadu atributu. Aktualizujeme proto prvnich len(obj) "TBD" atributu v table.attributes s tim, ze kontrolu zbylych "TBD" atributu (vc. pripadneho vyvolani vyjimky) provedeme az uplne na konci process_statement(...).
+                                # Zde resime blok ve WITH, u ktereho byly za nazvem docasne tabulky uvedeny aliasy (alespon nekterych) atributu. Predchystane ("TBD") atributy ale nelze primo aktualizovat, protoze v dusledku chyb v sqlparse mohlo dojit k umelemu rozdleni tokenu, tzn. zatim nemusime mit k dispozici kompletni sadu atributu. Aktualizujeme proto prvnich len(obj) "TBD" atributu v target_table.attributes s tim, ze kontrolu zbylych "TBD" atributu (vc. pripadneho vyvolani vyjimky) provedeme az uplne na konci process_statement(...).
                                 # Vime, ze aliasy atributu tabulky ve WITH musely byt uvedeny ve stejnem poradi jako atributy nyni zjistene z prikazu SELECT. Atributy u tabulky proto na zaklade jejich poradi aktualizujeme podle objektu vraceneho vyse metodou process_token(...).
                                 # ALE: v obj se mohou vyskytovat fiktivni atributy indikujici pouziti placeholderu (condition == Attribute.CONDITION_PLACEHOLDER_PRESENT), ktere zde musime preskocit.
                                 j = 0
                                 k = 0
-                                while (j < len(table.attributes)):
+                                while (j < len(target_table.attributes)):
                                     # Nejprve najdeme nasledujici "TBD" atribut
-                                    while (j < len(table.attributes)
-                                            and table.attributes[j].condition != Attribute.CONDITION_TBD):
+                                    while (j < len(target_table.attributes)
+                                            and target_table.attributes[j].condition != Attribute.CONDITION_TBD):
                                         j += 1
-                                    if j == len(table.attributes):
-                                        # Dosli jsme na konec table.attributes, tzn. uz tam neni zadny dalsi "TBD" atribut
+                                    if j == len(target_table.attributes):
+                                        # Dosli jsme na konec target_table.attributes, tzn. uz tam neni zadny dalsi "TBD" atribut
                                         break
                                     # Ted v obj preskocime vsechny pripadne fiktivni atributy s informacemi o placeholderech (staci kontrolovat pomoci name == None)
                                     while k < len(obj) and obj[k].name == None:
                                         k += 1
                                     if k == len(obj):
-                                        # Dosli jsme na konec obj, tzn. uz tam neni zadny dalsi standardni atribut, pomoci ktereho bychom mohli aktualizovat pripadne zbyle "TBD" atributy v table.attributes
+                                        # Dosli jsme na konec obj, tzn. uz tam neni zadny dalsi standardni atribut, pomoci ktereho bychom mohli aktualizovat pripadne zbyle "TBD" atributy v target_table.attributes
                                         break
                                     attr = obj.pop(k)
-                                    table.attributes[j].set_name(attr.name)
+                                    target_table.attributes[j].set_name(attr.name)
                                     # Neni nahodou drive zjisteny alias identicky s tim, co bylo v SELECT? Pokud ano, alias odstranime. Alias zde nemuze byt None (drive byl atribut ve tvaru name == condition == Attribute.CONDITION_TBD + s nastavenym aliasem), takze jmeno a alias muzeme porovnavat bez jakekoliv dalsi kontroly.
-                                    if attr.name == table.attributes[j].alias:
-                                        table.attributes[j].alias = None
-                                    table.attributes[j].condition = attr.condition
+                                    if attr.name == target_table.attributes[j].alias:
+                                        target_table.attributes[j].alias = None
+                                    target_table.attributes[j].condition = attr.condition
                                     # Komentar muzeme aktualizovat primo (bez vyuziti set_comment(...))
-                                    table.attributes[j].comment = attr.comment
+                                    target_table.attributes[j].comment = attr.comment
                                     j += 1
                             # Nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky
-                            table.attributes.extend(obj)
+                            target_table.attributes.extend(obj)
                         else:
                             # Ve zbylych situacich staci pridat nalezene atributy k aktualni tabulce (ktera uz u korektniho SQL kodu nyni nemuze byt None)
                             table.attributes.extend(obj)
@@ -1629,7 +1656,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/EI_zapis_hodnoceni_A2_letni_kurz_vyuka.sql"
         # source_sql = "./test-files/Evidence_chybne_poradi_oprava_01_mazani.sql"
         # source_sql = "./test-files/FIT_registrace_predmetu.sql"
-        source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
+        # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
+        source_sql = "./test-files/FIT_Uroven_jazyka_puvodni.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
