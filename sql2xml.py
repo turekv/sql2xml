@@ -25,8 +25,8 @@ class Attribute:
     CONDITION_PLACEHOLDER_PRESENT = "PLACEHOLDER_PRESENT"
     # Atribut neni kompletni (typicky v dusledku chybneho rozdeleni tokenu na vice casti -- chyby v sqlparse)
     CONDITION_SPLIT_ATTRIBUTE = "SPLIT_ATTRIBUTE"
-    # Atribut obsahujici literal neni kompletni (typicky v dusledku chybneho rozdeleni tokenu na vice casti -- chyby v sqlparse)
-    CONDITION_SPLIT_ATTRIBUTE_LITERAL = "SPLIT_ATTRIBUTE_LITERAL"
+    # Atribut typicky obsahujici literal, kde byl SQL kod vlivem chyby v sqlparse rozdelen na vice casti a muze tedy chybet alias
+    CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING = "SPLIT_ATTRIBUTE_ALIAS_MISSING"
     # Atribut z bloku ve WITH, u ktereho dopredu zname pouze alias ("WITH table(attr_alias_1, attr_alias_2, ...) AS ..."")
     CONDITION_TBD = "TO_BE_DETERMINED"
 
@@ -418,6 +418,8 @@ class Table:
 
 def is_comment(t: sql.Token) -> bool:
     """Vraci True/false podle toho, zda zadany token je SQL komentarem (tridu nestaci srovnavat jen s sql.Comment!)"""
+    if t == None:
+        return False
     return (isinstance(t, sql.Comment)
         or t.ttype == sql.T.Comment.Single
         or t.ttype == sql.T.Comment.Multiline)
@@ -730,10 +732,13 @@ def get_attribute_conditions(t: sql.Token) -> list:
 def process_with_element(t, comment_before="") -> str:
     """Kompletne zpracuje kod bloku ve WITH (vc. vytvoreni odpovidajici tabulky) a vrati komentar, ktery byl na konci t.tokens (protoze ten se dost mozna vztahuje ke kodu, ktery nasleduje po aktualne zpracovavanem bloku)."""
     # Pro osetreni BUGu popsaneho nize v kodu muze comment_before byt None. V takovem pripade byl WITH blok umele rozdelen na dva tokeny a nyni teprve zpracovavame ten druhy. Promennou statement_sql na zacatku inicializujeme pomoci None, z cehoz nize pozname, zda pokracovat s vytvarenim tabulky atd. (tokeny v podobe carky, bileho znaku apod. chceme preskocit a jednoduse vratit comment_before tak, jak jsme ho dostali).
+    # Identicky osetrime BUG, kdy se WITH blok jmenuje "result" ("WITH result AS (...)"), coz sqlparse vraci jako "[... Keyword <konec IdentifierList>] [AS (...)]".
+    if t.value.upper() == "RESULT":
+        return (comment_before, t.value, [], "")
     statement = None
     comment_after = comment_before
     if isinstance(comment_before, tuple):
-        # Zde zpracovavame zbytek umele rozdeleneho tokenu (jen zavorka plus pripadny komentar), tzn. name comment_before  == (comment_before, name, aliases, zacatek_sql_kodu)
+        # Zde zpracovavame zbytek umele rozdeleneho tokenu (jen zavorka plus pripadny komentar), tzn. name comment_before  == (comment_before, name, aliases, zacatek_sql_kodu). Musime ale rozlisit situaci, kdy jsme zatim zjistili pouze jmeno bloku
         name = comment_before[1]
         aliases = comment_before[2]
         source_sql = comment_before[3] + t.value
@@ -803,6 +808,9 @@ def process_with_element(t, comment_before="") -> str:
 
 def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=False) -> list:
     """Zpracuje token typu Identifier nebo Function a vrati odpovidajici atribut. Je-li pro popsani atributu potreba mezi-tabulka (napr. pokud je misto obycejneho atributu "( SELECT ... )" nebo "( CASE ... )"), vrati krome odpovidajiciho atributu i fiktivni atribut s udajem pro svazani nadrazene tabulky s nove vytvorenou mezi-tabulkou (name == alias == condition == None, comment == ID mezi-tabulky). Parametr only_save_dependencies urcuje, zda chceme ukladat nalezene atributy, nebo nas zajimaji jen pripadne zavislosti na jinych tabulkach."""
+    # Jako prvni osetritme BUG, kdy se atribut nebo alias jmenuji "result" (vraceno jako Keyword!) a patricny token potom je vracen rozdeleny na vice casti. V takovem pripade vratime "rozdeleny" atribut daneho jmena a pripadny alias/komentar z nasledujicich tokenu doplnime dodatecne.
+    if t.value.upper() == "RESULT":
+        return [Attribute(name=t.value, condition=Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING)]
     if (t.is_whitespace
             or t.ttype == sql.T.Punctuation
             or t.ttype == sql.T.Keyword
@@ -819,18 +827,28 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
     # Literal nema .tokens, takze ho musime vyloucit...
     if not (only_save_dependencies or t.ttype in sql.T.Literal) and t.tokens != None:
         last_nonws_token = get_last_nonws_token(t.tokens)
-        if isinstance(last_nonws_token, sql.Identifier) and last_nonws_token.value.lower() == "within":
+        last_nonws_token_upper = last_nonws_token.value.upper()
+        if isinstance(last_nonws_token, sql.Identifier) and last_nonws_token_upper == "WITHIN":
             # Musi byt s mezerami na zacatku/konci, aby naopak funkce (COUNT apod.) mohly byt bez mezer mezi nazvem a zavorkou
             split_attr_link = " WITHIN GROUP "
+        elif (last_nonws_token.ttype in sql.T.Literal
+                or (last_nonws_token.ttype == sql.T.Keyword  # V pripade "table.result" je posledni subtoken typu Name!
+                and last_nonws_token_upper == "RESULT")):
+            # Pokud je posledni non-whitespace subtoken typu Keyword nebo Literal, je pravdepodobne, ze vlivem BUGu v sqlparse doslo k umelemu rozdeleni vyctu atributu na vice tokenu (u Literalu napr. v situaci "SELECT ..., Literal alias", tzn. kdyz mezi Literalem a aliasem NENI "AS").
+            split_attr_link = "ALIAS_MISSING"
         elif last_nonws_token.ttype == sql.T.Keyword:
             split_attr_link = ""
-        elif last_nonws_token.ttype in sql.T.Literal:
-            # Pokud je posledni non-whitespace subtoken typu Keyword nebo Literal, je pravdepodobne, ze vlivem BUGu v sqlparse doslo k umelemu rozdeleni vyctu atributu na vice tokenu (u Literalu napr. v situaci "SELECT ..., Literal alias", tzn. kdyz mezi Literalem a aliasem NENI "AS").
-            split_attr_link = "-- LITERAL --"
     attributes = []
     if isinstance(t, sql.IdentifierList):
         # Jednotlive tokeny projdeme a zpracujeme. Parametr only_save_dependencies pritom musime nastavit podle jeho aktualni hodnoty.
         for token in t.tokens:
+            # BUG ("result"/Literal): pokud jsme narazili na carku a posledni nalezeny atribut je s potencialne chybejicim aliasem, je zrejme, ze alias nebyl uveden. Podminku tedy z posledniho atributu odstranime.
+            if (token.ttype == sql.T.Punctuation
+                    and len(attributes) > 0
+                    and attributes[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING):
+                attributes[-1].condition = None
+                # Muzeme rovnou pokracovat ve zpracovavani dalsiho tokenu
+                continue
             attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=only_save_dependencies))
     elif isinstance(t, sql.Parenthesis):
         # Nasli jsme zavorku, jejiz obsah je potreba projit. Zde musime zkontrolovat druhy non-whitespace token z first-token (jelikoz ten prvni je oteviraci zavorkou) a vec doresit dle situace.
@@ -905,14 +923,16 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
             and not only_save_dependencies):
         # Nasli jsme literal (typicky v situaci, kdy je ve WITH definovana pomocna tabulka s konkretnimi -- v SQL kodu zadanymi -- hodnotami) a tento si zaroven na zaklade parametru only_save_dependencies potrebujeme ulozit
         attributes.append(Attribute(name=t.normalized))
-    # Nakonec jeste nastavime condition na Attribute.CONDITION_SPLIT_ATTRIBUTE a comment na patricny spojovaci retezec, pokud je posledni atribut nekompletni
-    if split_attr_link != None:
-        if split_attr_link == "-- LITERAL --":
-            attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL
+    # Nakonec jeste nastavime condition na Attribute.CONDITION_SPLIT_ATTRIBUTE a comment na patricny spojovaci retezec, pokud je posledni atribut nekompletni (je-li condition jiz nastaveno, pak hodnotu nesmime prepsat!)
+    if split_attr_link != None and attributes[-1].condition == None:
+        # condition aktualizujeme pouze v pripade, ze jsme opravdu alias nenasli (napr. u "SELECT x AS result ...") ho totiz najdeme a nastavenim condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING bychom pak prisli i o pripadny zjisteny komentar!)
+        if split_attr_link == "ALIAS_MISSING":
+            if attributes[-1].alias == None:
+                attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING
         else:
             attributes[-1].condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
-        # U fiktivniho atributu musime komentar s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set_comment(...)!
-        attributes[-1].comment = split_attr_link
+            # U fiktivniho atributu musime komentar s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set_comment(...)!
+            attributes[-1].comment = split_attr_link
     return attributes
 
 
@@ -934,7 +954,8 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
         if (isinstance(t, sql.IdentifierList)
                 or isinstance(t, sql.Identifier)
                 or isinstance(t, sql.Function)
-                or isinstance(t, sql.Operation)):
+                or isinstance(t, sql.Operation)
+                or t.value.upper() == "RESULT"):
             attr = process_identifier_list_or_function(t, only_save_dependencies=False)
             attributes.extend(attr)
         elif t.ttype == sql.T.Wildcard:
@@ -990,8 +1011,11 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
         # V pripade, ze token (prip. prvni subtoken) neni typu Parenthesis, jde o prosty nazev zdrojove tabulky + pripadny alias a komentar. Tyto ziskame jednoduse zavolanim get_name_alias_comment(...). POZOR: potrebujeme vracet list, ve kterem budou informace k tabulce jako tuple (aby bylo vraceni dat funkcni vc. pripadu, kdy je ve FROM vicero zdroju)!
         return [get_name_alias_comment(t)]
     if context == "with":
-        # Token je v kontextu WITH -- Identifier ("WITH <token: name AS ( SELECT ... )>"), IdentifierList ("WITH <token: name_1 AS ( SELECT ... ), name_2 AS ( SELECT ... ), ...>")
-        # Token muze byt typu Parenthesis, pokud byl blok ve WITH umele rozdelen na dva tokeny (viz popis bugu v process_with_element(...))
+        # Token je v kontextu WITH -- Identifier ("WITH <token: name AS ( SELECT ... )>"), IdentifierList ("WITH <token: name_1 AS ( SELECT ... ), name_2 AS ( SELECT ... ), ...>"). Muze jit o typ Parenthesis, pokud byl blok ve WITH umele rozdelen na dva tokeny (viz popis BUGu v process_with_element(...))
+        # Dale: musime osetrit BUG, kdy se WITH blok/alias jmenuje "result" ("WITH result AS (...)" (sqlparse toto vraci jako Keyword a opet tokeny vraci rozdelene na vice casti)
+        if t.value.upper() == "RESULT":
+            # Zde je patricny "problemovy" blok uveden v seznamu bloku jako prvni, takze situaci vyresime primym prirazenim navratove hodnoty
+            return (comment_before, t.value, [], t.value)
         if isinstance(t, sql.Identifier) or isinstance(t, sql.Parenthesis):
             # WITH obsahuje pouze jeden blok (docasnou tabulku) --> zpracujeme metodou process_with_element(...); zaroven musime vratit pripadny komentar, ktery je poslednim tokenem v t.tokens, byt se dost mozna vztahuje az k nasledujicimu tokenu
             return process_with_element(t, comment_before)
@@ -1079,7 +1103,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
             comment_before = split_comment(t)[1]
             token_counter = 0
-        elif t.ttype == sql.T.Keyword:
+        elif t.ttype == sql.T.Keyword and t.value.upper() != "RESULT":
             # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni context
             if t.normalized == "FROM":
                 context = "from"
@@ -1180,6 +1204,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # DEBUG
                 if (t.normalized != "DISTINCT"
                         and t.normalized != "GROUP"
+                        and t.normalized != "AS"
                         and not (context == "on" and t.normalized == "AND")):
                     print(f"\n>>> POTENCIALNE PROBLEMATICKE KLICOVE SLOVO: {t.normalized}\n")
 
@@ -1252,8 +1277,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             else:
                 table.conditions.extend(attributes)
         else:
-            # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (context) a pripadnem komentari pred tokenem (comment_before).
-            # Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je context == None, tzn. process_token(...) vrati None.
+            # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (context) a pripadnem komentari pred tokenem (comment_before). Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je context == None, tzn. process_token(...) vrati None.
             obj = process_token(t, table, context, comment_before)
             # Navratova hodnota process_token(...) muze byt ruznych typu v zavislosti na kontextu apod. Na zaklade toho se nyni rozhodneme, jakym konkretnim zpusobem je potreba s ni nalozit.
             if obj != None:
@@ -1339,31 +1363,32 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             if split_attribute == None:
                                 # "Rozdeleny" atribut je v kolekci obj vzdy jako posledni --> index == -1
                                 if (obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE
-                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL):
+                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING):
                                     split_attribute = obj.pop()
                             else:
                                 # Zbytek rozdeleneho atributu je hned na zacatku kolekce
                                 attr_remainder = obj.pop(0)
                                 # Pokud napr. mezi "GROUP" a nasledujici zavorkou neni mezera, je pokracovani tokenu vc. klicoveho slova "GROUP". Zkontrolujeme tedy, zda jmeno attr_remainder zacina na "(" -- pokud ne a spojovaci reteze (split_attribute.comment) zaroven obsahuje vice nez jedno slovo, to posledni z nej odstranime.
-                                attr_link = split_attribute.comment.split()
-                                if not attr_remainder.name.startswith("(") and len(attr_link) > 1:
-                                    attr_link.pop()
-                                    # Komentar musime nastavit primo (mezery!), nikoliv pomoci set-comment(...)
-                                    split_attribute.comment = " " + " ".join(attr_link) + " "
                                 if split_attribute.condition == Attribute.CONDITION_SPLIT_ATTRIBUTE:
+                                    attr_link = split_attribute.comment.split()
+                                    if not attr_remainder.name.startswith("(") and len(attr_link) > 1:
+                                        attr_link.pop()
+                                        # Komentar musime nastavit primo (mezery!), nikoliv pomoci set-comment(...)
+                                        split_attribute.comment = " " + " ".join(attr_link) + " "
                                     # Standardni rozdeleny atribut
                                     split_attribute.set_name(f"{split_attribute.name}{split_attribute.comment}{attr_remainder.name}")
                                     split_attribute.alias = attr_remainder.alias
                                 else:
                                     # Rozdeleny atribut s Literalem
                                     split_attribute.alias = attr_remainder.name
-                                split_attribute.condition = attr_remainder.condition
+                                # condition musime resetovat na None, jinak by zustavalo se spec. hodnotou napr. pri "SELECT x, y result FROM ..."
+                                split_attribute.condition = None
                                 # Tady by nejspis take slo vzit komentar tak, jak je, ale pro poradek vyuzijeme set_comment(...)
                                 split_attribute.set_comment(attr_remainder.comment)
                                 target_table.attributes.append(split_attribute)
                                 if (len(obj) > 0
                                         and (obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE
-                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_LITERAL)):
+                                        or obj[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING)):
                                     split_attribute = obj.pop()
                                 else:
                                     split_attribute = None
@@ -1524,6 +1549,32 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         i = j
                         t = next_token
                         (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
+                elif is_comment(next_token) and "select" in context:
+                    # BUG/"result": "SELECT x result -- comment \n FROM ..." --> komentar musime priradit k poslednimu nalezenemu atributu
+                    if union_table != None:
+                        target_table = union_table
+                    else:
+                        target_table = table
+                    if len(target_table.attributes) > 0:
+                        comment = split_comment(next_token)
+                        target_table.attributes[-1].set_comment(comment[0])
+                        comment_before = comment[1]
+                        # Ulozime hodnotu akt. tokenu
+                        sql_components.append(t.value)
+                        join_components.append(t.value)
+                        union_components.append(t.value)
+                        # Aktualizujeme index a akt. token
+                        i = j
+                        t = next_token
+                        # Nacteme novy non-whitespace next_token (chceme zachovat veskere bile znaky!)
+                        (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
+                        while next_token != None and next_token.is_whitespace:
+                            sql_components.append(t.value)
+                            join_components.append(t.value)
+                            union_components.append(t.value)
+                            i = j
+                            t = next_token
+                            (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
                 # Zde musime znovu zkontrolovat, zda i pripadny novy next_token neni None atd.
                 if next_token != None:
                     next_token_upper = next_token.value.upper()
@@ -1550,6 +1601,15 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 or next_token_upper == "USING"
                                 or next_token_upper == "DISTINCT"
                                 or next_token_upper == ","))
+                        # BUG: musime osetrit pripad, kdy je "result" pouzit jako alias _bez_ uvedeni klicoveho slova AS. V takovem pripade zkontrolujeme, zda uz existuji nejake atributy, a pokud ano, ten posledni oznacime za rozdeleny (split_attribute + nastaveni patricne condition) s chybejicim aliasem. Tim bude automaticky zakazano i resetovani kontextu.
+                        if "select" in context and next_token_upper.startswith("RESULT"):  # Nemuze byt ==, protoze by nepokrylo situaci "SELECT [x, y] [result, z] FROM"
+                            if union_table != None:
+                                target_table = union_table
+                            else:
+                                target_table = table
+                            if len(target_table.attributes) > 0:
+                                split_attribute = target_table.attributes.pop()
+                                split_attribute.condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING
             if can_reset_context and split_attribute == None:
                 context = None
         # Nakonec si ulozime kod tokenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
@@ -1668,7 +1728,9 @@ if __name__ == "__main__":
         # source_sql = "./test-files/FIT_registrace_predmetu.sql"
         # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
         # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
-        source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
+        # source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
+        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
+        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener_MOD.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
