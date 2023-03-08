@@ -967,6 +967,9 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
         return attributes
     if context == "from" or context == "join":
         # Token je v kontextu FROM ("SELECT ... FROM <token>"), prip. JOIN (napr. "SELECT ... FROM ... INNER JOIN <token>"). V obou pripadech muze byt token jak typu Parenthesis ("SELECT ... FROM ( SELECT ... )", "... JOIN ( SELECT ... )"), tak muze jit o prosty nazev zdrojove tabulky + pripadny alias a komentar.
+        # Nejprve osetrime pripad, kdy se zdrojova tabulka jmenuje "result"
+        if t.value.upper() == "RESULT":
+            return [(t.value, None, None)]
         # Zde navic mohou nastat dva pripady: bud je za zavorkou alias a/nebo komentar (--> jako statement zpracujeme t.tokens[0]), nebo je v SQL kodu pouze zavorka (--> jako statement zpracujeme cely token).
         if isinstance(t, sql.Parenthesis):
             # Pripadny komentar by byl az za zavorkou, tzn. comment_before muzeme ignorovat
@@ -1084,6 +1087,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
     union_table = None
     # Nekompletni atribut vznikly v dusledku WITHIN GROUP, OVER apod. (viz mj. bugy zminene v process_token(...)); pokud neni None, je potreba ho sloucit s nekompletnim prvnim atributem vracenym v "dalsim kole" zpracovavani atributu
     split_attribute = None
+    # Promenne pro osetreni situaci, kdy jsou tokeny ve FROM/JOIN vlivem chyb v sqlparse umele rozdeleny
+    last_src_table_id = 1  # Lib. kladne cislo
     while t != None:
         if t.ttype == sql.T.Punctuation or t.is_whitespace:
             # Carku apod. pouze ulozime do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
@@ -1199,12 +1204,13 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Nacteme dalsi token, skocime zpet na zacatek cyklu a budeme pokracovat ve zpracovavani MERGE
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
                 continue
+            elif t.normalized == "AS":
+                last_src_table_id *= -1
             else:
 
                 # DEBUG
                 if (t.normalized != "DISTINCT"
                         and t.normalized != "GROUP"
-                        and t.normalized != "AS"
                         and not (context == "on" and t.normalized == "AND")):
                     print(f"\n>>> POTENCIALNE PROBLEMATICKE KLICOVE SLOVO: {t.normalized}\n")
 
@@ -1431,35 +1437,47 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Ve vracenem seznamu jsou informace o zdrojovych tabulkach (z "FROM ..."), cili pro kazdou z nich provedeme potrebne upravy. POZOR: prvky kolekce mohou byt typu tuple nebo Table podle toho, co jsme nasli v SQL kodu! 
                         for src_table_info in obj:
                             if isinstance(src_table_info, tuple) and isinstance(src_table_info[0], str):
-                                # Metoda process_token(...) vratila ntici, v niz je prvni prvek retezcem. Jinak receno, ziskali jsme nazev tabulky spolu s pripadnym aliasem a komentarem. Nejprve tedy zkusime najit zdrojovou tabulku, odkud se berou data, a pridame k ni alias.
-                                src_table = Table.get_table_by_name(name=src_table_info[0], alias_table=table)
-                                if src_table == None:
-                                    # Zdrojova tabulka zatim neexistuje (typicky v situaci, kdy resime "SELECT ... FROM dosud_nezminena_tabulka") --> vytvorime ji
-                                    src_table = Table(name=src_table_info[0], comment=src_table_info[2])
-                                    Table.__tables__.append(src_table)
-                                else:
-                                    # Komentar pridame jen v pripade, ze tento zatim neni nastaveny (prvotni komentar zpravidla byva detailnejsi a nedava smysl ho prepsat necim dost mozna kratsim/strucnejsim)
+                                # Ocekavame nyni alias plus pripadny komentar?
+                                if last_src_table_id < 0:
+                                    # ID posledni tabulky si prevedeme zpet na nezaporne cislo
+                                    last_src_table_id *= -1
+                                    Table.add_alias(table, last_src_table_id, src_table_info[0])
+                                    # Komentar
+                                    src_table = Table.get_table_by_id(last_src_table_id)
                                     if src_table.comment == None or len(src_table.comment) == 0:
-                                        # Komentar by asi slo vzit primo, ale pro poradek vyuzijeme set_comment(...)
                                         src_table.set_comment(src_table_info[2])
-                                Table.add_alias(table, src_table.id, src_table_info[1])
-                                if context == "join":
-                                    # Pokud resime JOIN, vytvorime patricnou mezi-tabulku (zatim neexistuje!), ke ktere budou nasledne pridany atributy s podminkami dle ON
-                                    join_table = Table(name_template="join", table_type=Table.AUX_TABLE)
-                                    Table.__tables__.append(join_table)
-                                    # Navic je nutne nastavit zavislosti tabulek: table (prip. union_table) --> join_table --> src_table
-                                    if union_table != None:
-                                        union_table.link_to_table_id(join_table.id)
-                                    else:
-                                        table.link_to_table_id(join_table.id)
-                                    join_table.link_to_table_id(src_table.id)
-                                elif union_table != None:
-                                    # Pokud resime UNION, mezi-tabulka uz existuje, takze pouze nastavime zavislosti (table --> union_table --> src_table)
-                                    table.link_to_table_id(union_table.id)
-                                    union_table.link_to_table_id(src_table.id)
                                 else:
-                                    # V "obecnem" pripade ("SELECT ... FROM src_table") proste jen k aktualni tabulce reprezentujici SELECT pridame zavislost na zdrojove tabulce. Tabulku s aliasy (alias_table) uz netreba nastavovat, jelikoz toto bylo provedeno drive.
-                                    table.link_to_table_id(src_table.id)
+                                    # Metoda process_token(...) vratila ntici, v niz je prvni prvek retezcem. Jinak receno, ziskali jsme nazev tabulky spolu s pripadnym aliasem a komentarem. Nejprve tedy zkusime najit zdrojovou tabulku, odkud se berou data, a pridame k ni alias.
+                                    src_table = Table.get_table_by_name(name=src_table_info[0], alias_table=table)
+                                    if src_table == None:
+                                        # Zdrojova tabulka zatim neexistuje (typicky v situaci, kdy resime "SELECT ... FROM dosud_nezminena_tabulka") --> vytvorime ji
+                                        src_table = Table(name=src_table_info[0], comment=src_table_info[2])
+                                        Table.__tables__.append(src_table)
+                                    else:
+                                        # Komentar pridame jen v pripade, ze tento zatim neni nastaveny (prvotni komentar zpravidla byva detailnejsi a nedava smysl ho prepsat necim dost mozna kratsim/strucnejsim)
+                                        if src_table.comment == None or len(src_table.comment) == 0:
+                                            # Komentar by asi slo vzit primo, ale pro poradek vyuzijeme set_comment(...)
+                                            src_table.set_comment(src_table_info[2])
+                                    Table.add_alias(table, src_table.id, src_table_info[1])
+                                    if context == "join":
+                                        # Pokud resime JOIN, vytvorime patricnou mezi-tabulku (zatim neexistuje!), ke ktere budou nasledne pridany atributy s podminkami dle ON
+                                        join_table = Table(name_template="join", table_type=Table.AUX_TABLE)
+                                        Table.__tables__.append(join_table)
+                                        # Navic je nutne nastavit zavislosti tabulek: table (prip. union_table) --> join_table --> src_table
+                                        if union_table != None:
+                                            union_table.link_to_table_id(join_table.id)
+                                        else:
+                                            table.link_to_table_id(join_table.id)
+                                        join_table.link_to_table_id(src_table.id)
+                                    elif union_table != None:
+                                        # Pokud resime UNION, mezi-tabulka uz existuje, takze pouze nastavime zavislosti (table --> union_table --> src_table)
+                                        table.link_to_table_id(union_table.id)
+                                        union_table.link_to_table_id(src_table.id)
+                                    else:
+                                        # V "obecnem" pripade ("SELECT ... FROM src_table") proste jen k aktualni tabulce reprezentujici SELECT pridame zavislost na zdrojove tabulce. Tabulku s aliasy (alias_table) uz netreba nastavovat, jelikoz toto bylo provedeno drive.
+                                        table.link_to_table_id(src_table.id)
+                                    # Jeste si ulozime ID posledni prirazene zdrojove tabulky pro pripadne osetreni BUGu v sqlparse
+                                    last_src_table_id = src_table.id
                             elif isinstance(src_table_info, Table):
                                 # Metoda process_token(...) vratila objekt typu Table. Toto muze nastat ve dvou pripadech: bud resime JOIN (k cemuz musime vytvorit mezi-tabulku a nastavit odpovidajici zavislosti), nebo jde o situaci "SELECT ... FROM ( SELECT ... )" (kde uz mezi-tabulka byla vytvorena -- jde o tu vracenou -- a pouze nastavime zavislost aktualni tabulky na mezi-tabulce).
                                 if context == "join":
@@ -1549,15 +1567,24 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         i = j
                         t = next_token
                         (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
-                elif is_comment(next_token) and "select" in context:
-                    # BUG/"result": "SELECT x result -- comment \n FROM ..." --> komentar musime priradit k poslednimu nalezenemu atributu
+                elif is_comment(next_token):
+                    comment = split_comment(next_token)
                     if union_table != None:
                         target_table = union_table
                     else:
                         target_table = table
-                    if len(target_table.attributes) > 0:
-                        comment = split_comment(next_token)
-                        target_table.attributes[-1].set_comment(comment[0])
+                    skip_further = False
+                    if "select" in context:
+                        # BUG/"result": "SELECT x result -- comment \n FROM ..." --> komentar musime priradit k poslednimu nalezenemu atributu
+                        if len(target_table.attributes) > 0:
+                            target_table.attributes[-1].set_comment(comment[0])
+                            skip_further = True
+                    elif context == "from" or context == "join":
+                        last_src_table = Table.get_table_by_id(last_src_table_id)
+                        if last_src_table.comment == None or len(last_src_table.comment) == 0:
+                            last_src_table.set_comment(comment[0])
+                            skip_further = True
+                    if skip_further:
                         comment_before = comment[1]
                         # Ulozime hodnotu akt. tokenu
                         sql_components.append(t.value)
@@ -1600,9 +1627,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 or next_token_upper == "DEFAULT"
                                 or next_token_upper == "USING"
                                 or next_token_upper == "DISTINCT"
+                                or next_token_upper == "AS"
                                 or next_token_upper == ","))
-                        # BUG: musime osetrit pripad, kdy je "result" pouzit jako alias _bez_ uvedeni klicoveho slova AS. V takovem pripade zkontrolujeme, zda uz existuji nejake atributy, a pokud ano, ten posledni oznacime za rozdeleny (split_attribute + nastaveni patricne condition) s chybejicim aliasem. Tim bude automaticky zakazano i resetovani kontextu.
-                        if "select" in context and next_token_upper.startswith("RESULT"):  # Nemuze byt ==, protoze by nepokrylo situaci "SELECT [x, y] [result, z] FROM"
+                        # BUG: musime osetrit pripad, kdy je "result" pouzit v casti SELECT jako alias _bez_ uvedeni klicoveho slova AS. V takovem pripade zkontrolujeme, zda uz existuji nejake atributy, a pokud ano, ten posledni oznacime za rozdeleny (split_attribute + nastaveni patricne condition) s chybejicim aliasem. Tim bude automaticky zakazano i resetovani kontextu.
+                        if (next_token_upper.startswith("RESULT")
+                                and context != None
+                                and "select" in context):  # Nemuze byt ==, protoze by nepokrylo situaci "SELECT [x, y] [result, z] FROM"
                             if union_table != None:
                                 target_table = union_table
                             else:
@@ -1610,7 +1640,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             if len(target_table.attributes) > 0:
                                 split_attribute = target_table.attributes.pop()
                                 split_attribute.condition = Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING
-            if can_reset_context and split_attribute == None:
+            # Pomoci last_src_table_id >= 0 kontrolujeme, zda nenasleduje tabulkovy alias
+            if can_reset_context and split_attribute == None and last_src_table_id >= 0:
                 context = None
         # Nakonec si ulozime kod tokenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -1729,8 +1760,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
         # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
         # source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
-        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
-        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener_MOD.sql"
+        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"      # DORESIT! -----------------------------------
+        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener_MOD.sql"  # DORESIT (result ve FROM, JOIN, ON, ...)! -----------------------------------
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
