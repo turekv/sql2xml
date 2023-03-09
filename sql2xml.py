@@ -609,11 +609,67 @@ def get_attribute_conditions(t: sql.Token) -> list:
     if isinstance(t, sql.Parenthesis) or isinstance(t, sql.Where):
         # Projdeme t.tokens a postupne rekurzivne zpracujeme kazdy z patricnych sub-tokenu. Zaroven potrebujeme referenci na posledni token v t.tokens, abychom pripadne mohli predat relevantni komentar zpet do hlavni casti kodu. Zohlednit musime i pripadne klicove slovo WHERE.
         last_nonws_token = get_last_nonws_token(t.tokens)
-        comment_before = ""  # Potreba pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchoziho vyskytu komentare
+        comment_before = ""  # Pro pripad, ze by bylo nutne vytvorit mezi-tabulku bez predchoziho vyskytu komentare
+        split_operation = False  # Pro pripad, ze je podminka rozdelena na vice radku a pred nekterym z \n je komentar
+        prev_parenthesis_value = None  # Pro pripad, ze je podminka rozdelena na vice tokenu vlivem pritomnosti extra zavorek
         # Prvni token preskocime (jde o oteviraci zavorku, resp. WHERE)
         (i, token) = t.token_next(0, skip_ws=True, skip_cm=False)
         while token != None:
-            if is_comment(token):
+            # Nejprve vyresime BUG, kdy vlivem pridani komentare do operace rozdelene na vice radku (napr. "WHERE value > a -- komentar \n + b") dojde k rozdeleni podminky na vice tokenu
+            if split_operation:
+                attributes[-1].condition += " " + token.value
+                split_operation = False
+                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+            elif token.ttype in sql.T.Operator and len(attributes) > 0:
+                attributes[-1].condition += "\n " + token.value
+                split_operation = True
+            elif (prev_parenthesis_value != None
+                    and (token.ttype == sql.T.Operator
+                    or (token.ttype == sql.T.Keyword
+                    and token.normalized != "AND"
+                    and token.normalized != "OR"))):
+                # BUG: je-li clen operace apod. obalen v SQL kodu extra zavorkami, sqlparse vraci takovou zavorku jako separatni token!
+                # Ulozime si pro referenci udaj o tom, kolik "hodnotovych" tokenu musime nacist (operator --> 1, klicove slovo --> 3)
+                if token.ttype == sql.T.Operator:
+                    n_tokens_to_store = 1
+                else:
+                    n_tokens_to_store = 3
+                # Predchozi token byl zavorkou a nyni nasleduje vlastni podminka
+                components = []
+                # Nacteme prvni cast podminky (operator, resp. "NOT BETWEEN" apod.)
+                while token != None and (token.ttype == sql.T.Operator or token.ttype == sql.T.Keyword):
+                    components.append(token.normalized)
+                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                # Dalsi tokeny uz nutne musi obsahovat podminku, resp. pripadny komentar
+                n_read_tokens = 0
+                while token != None and n_read_tokens < n_tokens_to_store:
+                    if is_comment(token):
+                        # Zde je komentar obecne uvaden v tokenu nasledujicim po specifikaci podminky, cili nas zajima jeho pocatecni cast
+                        comment = split_comment(token)[0]
+                    else:
+                        # Cokoliv jineho si ulozime (protoze bile znaky preskakujeme pri hledani tokenu a Punctuation apod. tady syntakticky nedava smysl). Ukladame vsak .normalized, cimz dojde k orezani pripadnych internich komentaru.
+                        attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+                        # Nasli jsme v podmince subselect?
+                        if len(attributes) > 0 and attributes[-1].condition == Attribute.CONDITION_SUBSELECT_NAME:
+                            components.append(attributes[-1].comment)
+                            attributes.pop()
+                        else:
+                            components.append(token.normalized)
+                        # Komentar mohl take byt primo soucasti tokenu (jako posledni non-whitespace subtoken). Pokud tomu tak bylo, aktualizujeme promennou comment. Toto ale musime obalit try-except, jelikoz ne kazdy token ma atribut tokens!
+                        try:
+                            last_nonws_token = get_last_nonws_token(token.tokens)
+                            if is_comment(last_nonws_token):
+                                comment = split_comment(last_nonws_token)[0]
+                        except:
+                            pass
+                        n_read_tokens += 1
+                    (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
+                # Jeste musime snizit index (i), abychom nepreskocili aktualni token, ktery muze byt podstatny. Toto ale lze udelat jen v pripade, ze i != None (nenasleduje-li zadny dalsi token, je metodou token_next(...) vraceno (None, None)!)
+                if i != None:
+                    i -= 1
+                condition = " ".join(components)
+                attributes.append(Attribute(name=prev_parenthesis_value, condition=condition, comment=comment))
+            elif is_comment(token):
                 # Z komentare nas zajima pouze cast za pripadnou delsi serii pomlcek
                 comment_before = split_comment(token)[1]
                 # Ukladat budeme jen neprazdny komentar (nikoliv vysledny komentar po zpracovani "-- \n" apod.)
@@ -653,15 +709,17 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 attributes.append(Attribute(name=f"<{exists_table.name}>", alias=None, condition=None, comment=comment_before))
                 # Zavorku -- ulozenou v token.tokens[1] -- nyni zpracujeme jako standardni statement s tim, ze parametrem predame referenci na vytvorenou mezi-tabulku (veskere pripadne zavislosti budou dohledany rekurzivne v process_statement(...))
                 process_statement(token.tokens[1], exists_table)
-            elif isinstance(token, sql.Identifier) or isinstance(token, sql.Function):
+            elif (isinstance(token, sql.Identifier)
+                    or isinstance(token, sql.Function)
+                    or token.ttype == sql.T.Name.Placeholder):
                 # Nasledujici tokeny v t.tokens budeme prochazet tak dlouho, nez ziskame jednu kompletni podminku. Toto nelze resit rekurzivne opetovnym volanim get_attribute_conditions(...), protoze tokeny musime prochazet na stavajici urovni (token \in t.tokens), nikoliv o uroven nize (token.tokens)
                 # Pripadne zavislosti je nutne dohledavat prubezne, jelikoz postupne nacitame dalsi tokeny!
                 comment = ""
                 name = token.value
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                # Viz BUG popsany nize, zde lze narazit na situaci (a)
                 if isinstance(token, sql.Comparison):
+                    # Viz BUG popsany nize, zde lze narazit na situaci (a)
                     # token.tokens[0] obsahuje zbytek leve strany podminky, pak je nutne postupovat v token.tokens analogicky kodu nize. Aktualizovat potom budeme posledni standardni (name != None) atribut z rekurzivne zpracovaneho tokenu.
                     attr = get_attribute_conditions(token)
                     for j in range(len(attr) - 1, -1, -1):
@@ -694,12 +752,22 @@ def get_attribute_conditions(t: sql.Token) -> list:
                                     attributes.pop()
                                 else:
                                     components.append(token.normalized)
+                                # Komentar mohl take byt primo soucasti tokenu (jako posledni non-whitespace subtoken). Pokud tomu tak bylo, aktualizujeme promennou comment. Toto ale musime obalit try-except, jelikoz ne kazdy token ma atribut tokens!
+                                try:
+                                    last_nonws_token = get_last_nonws_token(token.tokens)
+                                    if is_comment(last_nonws_token):
+                                        comment = split_comment(last_nonws_token)[0]
+                                except:
+                                    pass
                             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
                         # Jeste musime snizit index (i), abychom nepreskocili aktualni token, ktery muze byt podstatny. Toto ale lze udelat jen v pripade, ze i != None (nenasleduje-li zadny dalsi token, je metodou token_next(...) vraceno (None, None)!)
                         if i != None:
                             i -= 1
                         value = " ".join(components)
                     attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
+            elif isinstance(token, sql.Operation):
+                # Operace je v extra zavorce (napr. "WHERE (a+b) BETWEEN 1 AND 3") -- zavorka "(a+b)" je v takovem pripade vracena jako separatni token. Zde pouze dohledame zavislosti; ulozeni podminky probehne nasledne.
+                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
             elif token.ttype in sql.T.Literal and len(attributes) > 0:
                 # BUG v sqlparse: Pokud podminka obsahuje napr. artimetickou operaci a patricny operator neni od cisla oddelen mezerou, jsou tokeny vraceny spatne. Priklady:
                 #   (a) "tab.col -1 = tab2.col" --> 2 tokeny: "tab.col" (Identifier), "-1 = tab2.col" (Comparison)
@@ -709,6 +777,11 @@ def get_attribute_conditions(t: sql.Token) -> list:
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
                 # Jde o obycejny atribut (prip. jejich vycet)
                 attributes.extend(get_attribute_conditions(token))
+            # Pokud jsme resili zavorku, ulozime si pro jistotu aktualni token.value, jelikoz toto muze bt potreba, pokud bychom v nasledujicim tokenu narazili na klicove slovo/a NOT BETWEEN/IN apod.
+            if isinstance(token, sql.Parenthesis):
+                prev_parenthesis_value = token.value
+            else:
+                prev_parenthesis_value = None
             # Nakonec musime prejit na dalsi token (zde neni nutne kontrolovat, i != None (tzn. zda jsme uz na konci), protoze v takovem pripade je rovnou vraceno (None, None) a cyklus tedy standardne opustime podminkou ve WHILE)
             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
         return attributes
@@ -1242,9 +1315,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     continue
                 # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
                 if attribute.condition == Attribute.CONDITION_COMMENT:
-                    if j > 0 and obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
-                        obj[j - 1].set_comment(obj[j].comment)
-                    obj.pop(j)
+                    if j > 0 and (attributes[j - 1].comment == None or len(attributes[j - 1].comment) == 0):
+                        attributes[j - 1].set_comment(attributes[j].comment)
+                    attributes.pop(j)
                     continue
                 j += 1
             # Nyni aktualizujeme podminky v conditions a budouci zavislosti v attributes u patricne tabulky (union_table, resp. table -- dle situace)
@@ -1274,7 +1347,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             j = 0
                             while j < len(obj):
                                 attribute = obj[j]
-                                # Nejprve zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba aktualizovat seznam bindovanych promennych jak u join_table (protoze u ni jsme placehoder nasli), tak u nadrazene tabulky (table)
+                                # Nejprve zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba aktualizovat seznam bindovanych promennych jak u join_table (protoze u ni jsme placeholder nasli), tak u nadrazene tabulky (table)
                                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
                                     join_table.add_bind_var(attribute.comment)
                                     table.add_bind_var(attribute.comment)
@@ -1297,7 +1370,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     continue
                                 # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
                                 if attribute.condition == Attribute.CONDITION_COMMENT:
-                                    if j > 0 and obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
+                                    if j > 0 and (obj[j - 1].comment == None or len(obj[j - 1].comment) == 0):
                                         obj[j - 1].set_comment(obj[j].comment)
                                     obj.pop(j)
                                     continue
@@ -1628,7 +1701,7 @@ def replace_match_case(old_str, new_str, text):
         return text
     if new_str == None:
         new_str = ""
-    # Pro hledani celych slov potrebujeme na zacatek a konec old_str pridat metaznak \b (word boundary), k cemuz je nutne escapovat zpetne lomitko!
+    # Pro hledani celych slov potrebujeme na zacatek a konec old_str pridat metaznak \b (word boundary, je nutne escapovat zpetne lomitko!)
     return re.sub("\\b" + old_str + "\\b", f_match_case, text, flags=re.I)
 
 
@@ -1674,7 +1747,15 @@ if __name__ == "__main__":
         # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
         # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
         # source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
-        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
+        # source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
+        # source_sql = "./test-files/IP_kredity_Predmety_planu_oprava_poslat02.sql"
+        # source_sql = "./test-files/IP_oprava_chybejici_navazujici_jazyky.sql"
+        # source_sql = "./test-files/IP_pocty_predmetu_rozvolneni_rozvrhy_st_abs.sql"
+        # source_sql = "./test-files/IP_predmet_skupina_osob.sql"
+        # source_sql = "./test-files/IP_predmet_skupina_osob_with.sql"
+        # source_sql = "./test-files/IP_PV_odstraneni_nadbytecnych_dle_casu_reg.sql"
+        # source_sql = "./test-files/IP_registrace_PV_malo_moc_predmetu_jina_studia.sql"
+        source_sql = "./test-files/IP_registrace_zahranicni_stud.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
