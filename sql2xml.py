@@ -706,23 +706,6 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 #   (b) "tab.col = tab2.col +1" --> 2 tokeny: "tab.col = tab2.col" (Comparison), "+1" (Literal)
                 # Zde jsme narazili na pripad (b), kde staci u posledniho atributu aktualizovat podminku.
                 attributes[-1].condition += " " + token.value
-            elif token.ttype == sql.T.Name.Builtin and token.value.upper() == "ROWNUM":
-                # BUG v sqlparse: Pokud podminka obsahuje vestavenou promennou "rownum", je cela operace vracena jako separatni tokeny. Budeme tedy postupne nacitat nasledujici tokeny v t.tokens tak dlouho, nez sestavime celou podminku.
-                name = token.value
-                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                operator = token.value
-                (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                value = token.value
-                # V akt. tokenu (hodnota z podminky) musime dohledat zavislosti
-                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
-                # Nasleduje za podminkou komentar?
-                (j, next_token) = t.token_next(i, skip_ws=True, skip_cm=False)
-                if next_token != None and is_comment(next_token):
-                    comment = split_comment(next_token)[0]
-                    attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
-                    i = j
-                else:
-                    attributes.append(Attribute(name=name, condition=f"{operator} {value}"))
             elif token.ttype != sql.T.Keyword and token.ttype != sql.T.Punctuation:
                 # Jde o obycejny atribut (prip. jejich vycet)
                 attributes.extend(get_attribute_conditions(token))
@@ -1257,6 +1240,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     attributes.pop(j)
                     # V pripade Attribute.CONDITION_EXISTS_SELECT sice ihned nasleduje jeden standardni atribut se jmennou referenci na odpovidajici mezi-tabulku, ktery bychom mohli po nalezite podmince preskocit, ale podobne narocne je proste pouzit zde continue a nasledujici atribut zkontrolovat obvyklym zpusobem.
                     continue
+                # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
+                if attribute.condition == Attribute.CONDITION_COMMENT:
+                    if j > 0 and obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
+                        obj[j - 1].set_comment(obj[j].comment)
+                    obj.pop(j)
+                    continue
                 j += 1
             # Nyni aktualizujeme podminky v conditions a budouci zavislosti v attributes u patricne tabulky (union_table, resp. table -- dle situace)
             if union_table != None:
@@ -1305,6 +1294,12 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                         sub_table.copy_bind_vars_to_table(union_table)
                                     obj.pop(j)
                                     # V pripade Attribute.CONDITION_EXISTS_SELECT sice ihned nasleduje jeden standardni atribut se jmennou referenci na odpovidajici mezi-tabulku, ktery bychom mohli po nalezite podmince preskocit, ale podobne narocne je proste pouzit zde continue a nasledujici atribut zkontrolovat obvyklym zpusobem.
+                                    continue
+                                # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
+                                if attribute.condition == Attribute.CONDITION_COMMENT:
+                                    if j > 0 and obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
+                                        obj[j - 1].set_comment(obj[j].comment)
+                                    obj.pop(j)
                                     continue
                                 j += 1
                             # Vraceny objekt (nyni uz bez pripadneho fiktivniho atributu s komentarem) muzeme pouzit k aktualizaci atributu i mezitabulky reprezentujici JOIN. Budouci zavislosti z kolekce future_dependencies pridame do table.attributes.
@@ -1473,7 +1468,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         can_reset_context = False
                     else:
                         token_counter = 0
-            # okud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), resp. nenasleduje problematicke klicove slovo, ktere by zpusobilo vraceni vicero tokenu namisto jednoho, muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ... V SQL kodu chceme zachovat veskere bile znaky!
+            # Pokud neexistuje zadny nekompletni atribut (dalsi BUG: WITHIN GROUP, OVER, ...), resp. nenasleduje problematicke klicove slovo, ktere by zpusobilo vraceni vicero tokenu namisto jednoho, muzeme resetovat kontext. K tomu ale musime taktez zkontrolovat nasledujici token. Podobne overime, jestli nenasleduje AND, coz by znacilo napr. pokracovani podminky v JOIN ... ON podm1 AND podm2 AND ... V SQL kodu chceme zachovat veskere bile znaky!
             (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
             while next_token != None and next_token.is_whitespace:
                 sql_components.append(t.value)
@@ -1614,7 +1609,7 @@ def get_random_string(n: int) -> str:
 
 
 def replace_match_case(old_str, new_str, text):
-    """Nahradi vsehcny vyskyty retezce old_str v retezci text retezcem new_str. V pocatecnich znacich new_str az do delky min(len(old_str), len(new_str)) je zachovana velikost pismen, pripadna dalsi pismena az do konce new_str jsou ponechana tak, jak byla zadana."""
+    """Nahradi vsechny vyskyty retezce old_str (musi jit o cela slova) v retezci text retezcem new_str. V pocatecnich znacich new_str az do delky min(len(old_str), len(new_str)) je zachovana velikost pismen, pripadna dalsi pismena az do konce new_str jsou ponechana tak, jak byla zadana."""
 
     def f_match_case(match):
         g = match.group()
@@ -1633,7 +1628,8 @@ def replace_match_case(old_str, new_str, text):
         return text
     if new_str == None:
         new_str = ""
-    return re.sub(old_str, f_match_case, text, flags=re.I)
+    # Pro hledani celych slov potrebujeme na zacatek a konec old_str pridat metaznak \b (word boundary), k cemuz je nutne escapovat zpetne lomitko!
+    return re.sub("\\b" + old_str + "\\b", f_match_case, text, flags=re.I)
 
 
 if __name__ == "__main__":
@@ -1678,7 +1674,7 @@ if __name__ == "__main__":
         # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
         # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
         # source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
-        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"  # DORESIT! -----------------------------------
+        source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -1741,6 +1737,7 @@ if __name__ == "__main__":
         replacements = {}
         replacements["data"] = ""
         replacements["result"] = ""
+        replacements["rownum"] = ""
 
         # TODO: slo by takto vyresit i bug "within group"? (vyzadovalo by ale regex klic atd., jelikoz mezi slovy mohou byt bile znaky!)
 
