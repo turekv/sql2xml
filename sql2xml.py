@@ -452,6 +452,18 @@ def split_comment(t: sql.Token) -> list:
     return [leading_portion, trailing_portion]
 
 
+def first_dml_token_is_select(token_list: sql.TokenList) -> bool:
+    """Vrati prvni DML nebo Keyword token ze zadaneho seznamu"""
+    if token_list == None or len(token_list) == 0:
+        return False
+    i = 0
+    while i < len(token_list) and token_list[i].ttype != sql.T.DML:
+        i += 1
+    if i == len(token_list):
+        return False
+    return token_list[i].normalized == "SELECT"
+
+
 def get_last_nonws_token(t: sql.TokenList) -> sql.Token:
     """Vrati posledni non-whitespace token ze zadaneho seznamu"""
     if t == None or len(t) == 0:
@@ -697,6 +709,9 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     i -= 1
                 condition = " ".join(components)
                 attributes.append(Attribute(name=prev_token_value, condition=condition, comment=comment))
+            elif isinstance(token, sql.Parenthesis) and first_dml_token_is_select(token.tokens):
+                # Subselect je soucasti podminky (napr. "( SELECT ... ) BETWEEN ..."). Dohledame tedy zavislosti, na konci cyklu nastavime prev_token_value (protoze token je typu Parenthesis) a v ukladani zbytku tokenu budeme pokracovat v dalsi iteraci (budou pritom take z attributes extrahovna jmena subselectu).
+                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
             elif is_comment(token):
                 # Z komentare nas zajima pouze cast za pripadnou delsi serii pomlcek
                 comment_before = split_comment(token)[1]
@@ -1229,6 +1244,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
                 split_attribute = table.attributes.pop()
                 # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
+                split_attribute.condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
                 split_attribute.comment = " OVER "
             elif (t.normalized in ["ORDER BY", "GROUP BY", "CYCLE", "SET", "TO", "DEFAULT", "USING", "WHEN", "THEN"]):
                 # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime). V SQL zdroji ale chceme zachovat veskere bile znaky...
