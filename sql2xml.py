@@ -1063,7 +1063,12 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
         return [Attribute(name=None, alias=None, condition=Attribute.CONDITION_SPLIT_ATTRIBUTE_LINK, comment=t.value)]
     # Pokud jde o Placeholder, vratime fiktivni atribut (name == alias == None, condition == Attribute.CONDITION_PLACEHOLDER_PRESENT, comment == nazev placeholderu), podle ktereho pak bude mozne pridat placeholder do seznamu u tabulky, resp. potazmo v generovanem diagramu barevne odlisit patricnou tabulku a uvest u ni seznam bindovanych promennych
     if t.ttype == sql.T.Name.Placeholder:
-        return [Attribute(name=None, alias=None, condition=Attribute.CONDITION_PLACEHOLDER_PRESENT, comment=t.value)]
+        attributes = []
+        attributes.append(Attribute(name=None, alias=None, condition=Attribute.CONDITION_PLACEHOLDER_PRESENT, comment=t.value))
+        # Pripadny komentar nikdy neni soucasti placeholderu (BUG: sqlparse takovy komentar zcela preskoci!)
+        if not only_save_dependencies:
+            attributes.append(Attribute(name=t.value))
+        return attributes
     # POZOR: sqlparse neumi WITHIN GROUP(...) (napr. "SELECT LISTAGG(pt.typ_program,', ') WITHIN GROUP(ORDER BY pt.typ_program) AS programy FROM ...") --> BUG report ( https://github.com/andialbrecht/sqlparse/issues/700 ). Podobne je nekdy vracena funkce COUNT (a nejspis i jine funkce) -- nazev fce je vracen jako klicove slovo na konci Identifier (za carkou; resp. posledniho Identifieru v IdentifierList) a zavorka s parametry pak jako zacatek naledujiciho tokenu.
     # Bugy vyse prozatim obejdeme tak, ze pri zpracovavani vzdy overime posledni subtoken (Identifier WITHIN (vraceno jako Identifier), resp. Keyword s nazvem funkce -- pokud ano, je temer jiste, ze jde o zminenou situaci a posledni nalezeny atribut pak bude nekompletni (--> nastavime u nej condition na Attribute.CONDITION_SPLIT_ATTRIBUTE, podle cehoz pak v hlavnim kodu pozname, ze tento je nekompletni). Takovy nekompletni atribut pritom muze vzdy byt uveden pouze jako posledni ve vracenem seznamu atributu.
     split_attr_link = None
@@ -1178,6 +1183,8 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
         # Nejprve vyresime situaci, kdy je v SQL kodu hint ("+ MATERIALIZE" apod.), nebo byly tokeny umele rozdeleny na vice casti vlivem pritomnosti "komentar \n" uvnitr operace apod. Vratime proto fiktivni atribut, ktery -- pokud se ukaze, ze byl nesmyslny -- zahodime.
         if t.ttype == sql.T.Operator:
             return [Attribute(name=None, alias=None, condition=Attribute.CONDITION_SPLIT_ATTRIBUTE_LINK, comment=t.value)]
+        if t.ttype == sql.T.Name.Placeholder:
+            return process_identifier_list_or_function(t, only_save_dependencies=False)
         # Token je v kontextu lib. mutace SELECT (std., UNION SELECT, ...). Pokud je token typu Parenthesis, je potreba vytvorit odpovidajici (mezi-)tabulku a zavorku pak zpracovat jako samostatny SQL statement. Do process_statement(...) pritom musime predat odkaz na novou tabulku, aby bylo mozne spravne priradit nalezene atributy atd. Krome toho muze token reprezentovat i "( SELECT ...) AS ..." nebo "( CASE ... ) AS ..." ve vyctu atributu.
         if isinstance(t, sql.Parenthesis):
             # Zde resime UNION SELECT nebo "SELECT ... FROM ( SELECT ... )"; nemuze jit o "( SELECT ...) AS ..." nebo "( CASE ... ) AS ..." ve vyctu atributu, protoze tam musi byt alias (a takovy token tedy je typu Identifier[List])
@@ -1972,7 +1979,7 @@ def text_to_dia(text: str) -> str:
     """Vrati text ve tvaru vhodnem pro vlozeni do .dia"""
     if text != None and len(text) > 0:
         # Pocatecni a koncove bile znaky orezeme
-        return text.replace("<", "&lt;").replace(">", "&gt;")
+        return text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
     return ""
 
 
@@ -2129,7 +2136,10 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
         source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
         source_sql = "./test-files/Terminy_registrace_poradi.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
-        source_sql = "./test-files/TMP210_profese_t1_new.sql"
+        # source_sql = "./test-files/TMP210_profese_t1_new.sql"
+        # source_sql = "./test-files/TMP210_profese_t2_new.sql"
+        # source_sql = "./test-files/TMP216_Bind_1.sql"
+        source_sql = "./test-files/TMP216_Bind_2.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -2157,7 +2167,7 @@ if __name__ == "__main__":
             fTxt = open(fNamePrefix + "_vystup.txt", mode="w", encoding="utf-8")
             # fTxt.write(formatted_sql + "\n")
 
-        # Pred analyzou SQL kodu musime provest nahradu problematickych vyrazu. Nektere upravime jen kosmeticky (ale tak, ze se tim vyhneme problemum s parserem), jine je potreba nahradit nahodnymi retezci. Nejprve vyresime kosmeticke zmeny, pote stejny slovnik (replacements) vycistime a pouzijeme ho pro ulozeni docasnych nahrad. Zde na zacatku slovnik vyplnime jen problematickymi vyrazy, jako hodnotu lze ulozit cokoliv, nebot tato bude nize nahrazena vhodnym nahodnym retezcem. Potrebujeme, aby:
+        # Pred analyzou SQL kodu musime provest nahradu problematickych vyrazu. Nektere upravime jen kosmeticky (ale tak, ze se tim vyhneme problemum s parserem), jine je potreba nahradit nahodnymi retezci. Nejprve vyresime kosmeticke zmeny, pote stejny slovnik (replacements) vycistime a pouzijeme ho pro ulozeni docasnych nahrad. Zde na zacatku slovnik vyplnime problematickymi vyrazy, jako hodnotu lze ulozit pripadny nutny prefix nahodneho retezce. Potrebujeme, aby:
         #   * nahradni retezce byly ruzne,
         #   * v zadnem z nich se nevyskytoval lib. z puvodnich problematickych vyrazu a
         #   * zadny z nich nebyl v puvodnim SQL kodu (bez ohledu na velikost pismen).
@@ -2178,11 +2188,13 @@ if __name__ == "__main__":
             # Nahrazujeme libovolne vyskyty (tzn. bez ohledu na to, zda je shoda nalezena jako cele slovo)
             query = replace_match_case(r_key, replacements[r_key], query, whole_words=False)
 
-        # (b) Docasne nahrady nahodnymi retezci
+        # (b) Docasne nahrady nahodnymi retezci, boolovska hodnota znaci, zda pozadujeme nahradu celych slov
         replacements = {}
-        replacements["data"] = ""
-        replacements["result"] = ""
-        replacements["rownum"] = ""
+        replacements["data"] = ("", True)
+        replacements["result"] = ("", True)
+        replacements["rownum"] = ("", True)
+        replacements["&&"] = (":", False)  # | Zde nas zachovani malych/velkych pismen netrapi, jelikoz nahrazujeme
+        replacements["&"] = (":", False)   # | pouze ampersandy (napr. "&data" --> ":RANDOMSTRINGdata")
 
         # TODO: slo by takto vyresit i bug "within group"? (vyzadovalo by ale regex klic atd., jelikoz mezi slovy mohou byt bile znaky!)
 
@@ -2190,9 +2202,10 @@ if __name__ == "__main__":
         generated_r_strs = []
         r_keys = replacements.keys()
         for r_key in r_keys:
+            (prefix, whole_words) = replacements[r_key]
             while True:
-                # Potrebujeme retezec dost dlouhy na to, abychom nahodou nevygenerovali klicove slovo apod. (24 znaku by snad melo stacit). Zaroven musi jeho delka byt prinejmensim takova, jako delka puvodniho vyrazu, aby bylo mozne kompletne zachovat velikosti pismen.
-                r_str = get_random_string(max(24, len(r_key)))
+                # Potrebujeme retezec dost dlouhy na to, abychom nahodou nevygenerovali klicove slovo apod. (24 znaku by snad melo stacit). Zaroven musi jeho delka byt prinejmensim takova, jako delka puvodniho vyrazu, aby bylo mozne kompletne zachovat velikosti pismen. Pred nahodny retezec musime pridat prefix ulozeny ve slovniku replacements!
+                r_str = prefix + get_random_string(max(24, len(r_key)))
                 if r_str in generated_r_strs or r_str in lc_query:
                     continue
                 key_in_r_str = False
@@ -2202,13 +2215,13 @@ if __name__ == "__main__":
                         break
                 if not key_in_r_str:
                     generated_r_strs.append(r_str)
-                    replacements[r_key] = r_str
+                    replacements[r_key] = (r_str, whole_words)
                     break
         # Nahradni retezce jsou nachystane, upravime obsah promenne query
         for r_key in r_keys:
-            # Bezny string neumi case-insensitive nahrady --> musime provest pomoci modulu re. Pokud by nam nezalezelo na malych/velkych pismenech, slo by pouzit radek nize, ale nahradu zkusime provest alespon s castecnym zachovanim malych/velkych pismen.
-            # query = re.compile(re.escape(r_key), re.IGNORECASE).sub(replacements[r_key], query)
-            query = replace_match_case(r_key, replacements[r_key], query)
+            # Bezny string neumi case-insensitive nahrady --> musime provest pomoci modulu re
+            (r_str, whole_words) = replacements[r_key]
+            query = replace_match_case(r_key, r_str, query, whole_words=whole_words)
 
         # Nyni muzeme zacit parsovat
         statements = parse(query, encoding=encoding)
@@ -2217,51 +2230,56 @@ if __name__ == "__main__":
         
         # Po zpracovani kodu je nutne provest zpetnou nahradu vsech drive nahrazenych problematickych vyrazu
         for r_key in replacements.keys():
-            r_str = replacements[r_key]
+            (r_str, whole_words) = replacements[r_key]
             for table in Table.__tables__:
                 # Jmeno
-                table.name = replace_match_case(r_str, r_key, table.name)
+                table.name = replace_match_case(r_str, r_key, table.name, whole_words=whole_words)
                 # Aliasy (nutno iterovat pomoci indexu!)
                 for key in table.statement_aliases.keys():
                     aliases = table.statement_aliases[key]
                     for i in range(len(aliases)):
-                        aliases[i] = replace_match_case(r_str, r_key, aliases[i])
+                        aliases[i] = replace_match_case(r_str, r_key, aliases[i], whole_words=whole_words)
                 # Atributy
                 for attr in table.attributes:
                     # Jmeno
-                    attr.name = replace_match_case(r_str, r_key, attr.name)
+                    attr.name = replace_match_case(r_str, r_key, attr.name, whole_words=whole_words)
                     # Kratke jmeno
                     if attr.short_name != None:
-                        attr.short_name = replace_match_case(r_str, r_key, attr.short_name)
+                        attr.short_name = replace_match_case(r_str, r_key, attr.short_name, whole_words=whole_words)
                     # Alias
                     if attr.alias != None:
-                        attr.alias = replace_match_case(r_str, r_key, attr.alias)
+                        attr.alias = replace_match_case(r_str, r_key, attr.alias, whole_words=whole_words)
                     # # Podminky nemusime u standardnich atributu vubec resit, protoze je vzdy None
                     # if attr.condition != None:
                     #     attr.condition = replace_keep_case(repl_str, repl_key, attr.condition)
                     # Komentar
                     if attr.comment != None:
-                        attr.comment = replace_match_case(r_str, r_key, attr.comment)
+                        attr.comment = replace_match_case(r_str, r_key, attr.comment, whole_words=whole_words)
                 # Podminky
                 for attr in table.conditions:
-                    attr.name = replace_match_case(r_str, r_key, attr.name)
+                    attr.name = replace_match_case(r_str, r_key, attr.name, whole_words=whole_words)
                     if attr.short_name != None:
-                        attr.short_name = replace_match_case(r_str, r_key, attr.short_name)
+                        attr.short_name = replace_match_case(r_str, r_key, attr.short_name, whole_words=whole_words)
                     if attr.alias != None:
-                        attr.alias = replace_match_case(r_str, r_key, attr.alias)
+                        attr.alias = replace_match_case(r_str, r_key, attr.alias, whole_words=whole_words)
                     if attr.condition != None:
-                        attr.condition = replace_match_case(r_str, r_key, attr.condition)
+                        attr.condition = replace_match_case(r_str, r_key, attr.condition, whole_words=whole_words)
                     if attr.comment != None:
-                        attr.comment = replace_match_case(r_str, r_key, attr.comment)
+                        attr.comment = replace_match_case(r_str, r_key, attr.comment, whole_words=whole_words)
                 # Bindovane promenne (nutno iterovat pomoci indexu!)
                 for i in range(len(table.used_bind_vars)):
-                    table.used_bind_vars[i] = replace_match_case(r_str, r_key, table.used_bind_vars[i])
+                    # Pred nahradou zpet musime nejprve pridat ":" a potom zase ":" (prip. jeden ci dva "&") zase odebrat!
+                    bind_var = ":" + table.used_bind_vars[i]
+                    bind_var = replace_match_case(r_str, r_key, bind_var, whole_words=whole_words)
+                    while bind_var.startswith(":") or bind_var.startswith("&"):
+                        bind_var = bind_var[1:]
+                    table.used_bind_vars[i] = bind_var
                 # Komentar
                 if table.comment != None:
-                    table.comment = replace_match_case(r_str, r_key, table.comment)
+                    table.comment = replace_match_case(r_str, r_key, table.comment, whole_words=whole_words)
                 # Zdrojovy kod
                 if table.source_sql != None:
-                    table.source_sql = replace_match_case(r_str, r_key, table.source_sql)
+                    table.source_sql = replace_match_case(r_str, r_key, table.source_sql, whole_words=whole_words)
 
         # Byla v kodu nalezena alespon jedna tabulka? Pokud ne, vypiseme chybu pomoci vyjimky
         if len(Table.__tables__) == 0:
