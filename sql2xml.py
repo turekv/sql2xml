@@ -31,6 +31,8 @@ class Attribute:
     CONDITION_SPLIT_ATTRIBUTE_LINK = "SPLIT_ATTRIBUTE_LINK"
     # Atribut typicky obsahujici literal, kde byl SQL kod vlivem chyby v sqlparse rozdelen na vice casti a muze tedy chybet alias
     CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING = "SPLIT_ATTRIBUTE_ALIAS_MISSING"
+    # Atributy obsahujici pouze jednu cast podminky (leva strana podminky, operator, prava strana podminky; typicky z casti "ON ...", kde jsou v urcitych situacich tokeny vraceny jednotlive)
+    CONDITION_SINGLE_ELEMENT = "SINGLE_ELEMENT"
     # Atribut z bloku ve WITH, u ktereho dopredu zname pouze alias ("WITH table(attr_alias_1, attr_alias_2, ...) AS ...")
     CONDITION_TBD = "TO_BE_DETERMINED"
 
@@ -581,7 +583,9 @@ def process_comparison(t: sql.Comparison) -> Attribute:
     components = []
     j = 0
     # Posledni cast podminky je nutna v pripade, ze pred operatorem neni mezera. POZOR: "...ttype != sql.T.Comparison" NENI TOTEZ JAKO "not isinstance(..., sql.Comparison)"!
+    name_is_literal = True 
     while j < len(t.tokens) and not t.tokens[j].is_whitespace and t.tokens[j].ttype != sql.T.Comparison:
+        name_is_literal = name_is_literal and t.tokens[j].ttype in sql.T.Literal
         components.append(t.tokens[j].value)
         j += 1
     name = "".join(components)
@@ -594,15 +598,15 @@ def process_comparison(t: sql.Comparison) -> Attribute:
     parse_value = True
     if len(subselect_names) == 1:
         # Nasli jsme jen jeden subselect
-        if Attribute.is_standard_name(name):
+        if Attribute.is_standard_name(name) or name_is_literal:
             # Promenna name obsahuje pouze znaky povolene pro identifikatory, tzn. subselect (s mezerami, zavorkami atd.) musi byt napravo od operatoru
-            value = subselect_names[0]
+            value = get_op_prefix(subselect_names[0])
             parse_value = False
         else:
-            name = subselect_names[0]
+            name = get_op_prefix(subselect_names[0])
     elif len(subselect_names) == 2:
-        name = subselect_names[0]
-        value = subselect_names[1]
+        name = get_op_prefix(subselect_names[0])
+        value = get_op_prefix(subselect_names[1])
         parse_value = False
     if parse_value:
         # Preskocime veskere bile znaky za operatorem...
@@ -641,7 +645,12 @@ def get_subselect_names(attributes: list) -> list:
 
 
 def get_op_prefix(subselect_names: list) -> str:
-    """Vraci prefix s nazvy subselectu pro vlozeni do nazvu atributu nebo podminky"""
+    """Vraci prefix s nazvy subselectu (ulozeny v seznamu) pro vlozeni do nazvu atributu nebo podminky"""
+    if subselect_names == None or len(subselect_names) == 0:
+        return None
+    if isinstance(subselect_names, str):
+        # Pokud jsme do metody predali obycejny retezec namisto seznamu retezcu, sloucime ho s "Op(" a ")" standardnim zpusobem
+        return "Op(" + subselect_names + ")"
     return "Op(" + ", ".join(subselect_names) + ")"
 
 
@@ -656,12 +665,48 @@ def get_attribute_conditions(t: sql.Token) -> list:
         # Token je obycejnym srovnanim, takze staci do kolekce attributes pridat navratovou hodnotu process_comparison(...) (nelze vratit primo tuto navratovou hodnotu, tzn. objekt typu Attribute, protoze typ navratove hodnoty se pozdeji poziva k rozliseni, jak presne s takovou hodnotou nalozit). Zaroven musime namisto .append() pouzit .extend(), jelikoz je vlivem dohledavani zavislosti vracen seznam atributu, nikoliv pouze jeden atribut!
         attributes.extend(process_comparison(t))
         return attributes
+    if t.ttype == sql.T.Comparison:  # != sql.Comparison!
+        # BUG: pokud je v SQL kodu "JOIN ... ON ... AND name comment NOT IN ( SELECT ... )", vraci toto sqlparse jako oddelene tokeny ([name comment] [NOT IN] [(SELECT ... )]). Na tuto sekvenci pritom narazime primo v process_statement(...), tzn. tokeny jsou pak posilany oddelene do zdejsi metody. Situaci tedy musime nejprve detekovat a potom postupne vracet zpet nekompletni atributy (condition = Attribute.CONDITION_SINGLE_ELEMENT). Pokud by za operatorem byl komentar, byl by sqlparse vracen jako dalsi token, tzn. nema smysl toto zde resit.
+        attributes.append(Attribute(name=t.normalized, condition=Attribute.CONDITION_SINGLE_ELEMENT))
+        return attributes
     if isinstance(t, sql.Identifier):
         # Projdeme t.tokens, pricemz dopredu vime, ze kolekce attributes bude ve vysledku obsahovat jediny standardni atribut
+        # Nejprve dohledame pripadne zavislosti pomoci process_identifier_list_or_function(..., only_save_dependencies=True)
+        dep_attr = process_identifier_list_or_function(t, only_save_dependencies=True)
+        subselect_names, dep_attr = get_subselect_names(dep_attr)
+        attributes.extend(dep_attr)
+        comment = ""
+        # BUG: viz popis "JOIN ... ON ... AND name comment NOT IN ( SELECT ... )" vyse
+        name_only = False
+        try:
+            i = 0
+            token = t.token_first(skip_ws=True, skip_cm=True)
+            while token != None and (token.ttype == sql.T.Name or token.value == "."):
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)
+            if token == None:
+                # Dosli jsme na konec t.tokens, tzn. jsou tam pouze subtokeny typu Name a tecky (plus pripadne bile znaky a komentare, ktere zde nejsou podstatne)
+                name_only = True
+        except:
+            pass
+        # Dostali jsme ke zpracovani pouze identifikator s pripadnym komentarem?
+        if name_only:
+            try:
+                last_nonws_subtoken = get_last_nonws_token(t.tokens)
+                if is_comment(last_nonws_subtoken):
+                    comment = split_comment(last_nonws_subtoken)[0]
+            except:
+                pass
+            if len(subselect_names) > 0:
+                name = get_op_prefix(subselect_names)
+            else:
+                name = t.normalized
+            attributes.append(Attribute(name=name, condition=Attribute.CONDITION_SINGLE_ELEMENT, comment=comment))
+            return attributes
+        # Podminka je kompletni, muzeme ji nacist a ulozit celou jako standardni atribut (bez ohledu na pripadne subselecty -- stejne musime projit subtokeny kvuli pripadnych komentaru)
         comment = ""
         i = 0
         token = t.token_first(skip_ws=True, skip_cm=False)
-        name = token.value
+        name = token.normalized  # Ulozime si .normalized, tzn. bez pripadneho komentare
         (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
         operator = token.normalized
         (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
@@ -678,12 +723,29 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 break
             (i, token) = t.token_next(i, skip_ws=True, skip_cm=False)
         value = " ".join(components)
-        attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
-        # Nakonec dohledame pripadne zavislosti pomoci process_identifier_list_or_function(..., only_save_dependencies=True)
-        attributes.extend(process_identifier_list_or_function(t, only_save_dependencies=True))
+        # Tvar atributu doladime podle pripadnych subselectu
+        if len(subselect_names) > 0:
+            attributes.append(Attribute(name=get_op_prefix(subselect_names), comment=comment))
+        else:
+            attributes.append(Attribute(name=name, condition=f"{operator} {value}", comment=comment))
 
         # TODO: co kdyz zde bude subselect? Muze to vubec nastat?
 
+        return attributes
+    if isinstance(t, sql.Parenthesis) and first_dml_token_is_select(t.tokens):
+        # Zpracovavame "( SELECT ... ) [komentar]", tzn. musi jit pouze o cast posdminky (--> condition=Attribute.CONDITION_SINGLE_ELEMENT)
+        dep_attr = process_identifier_list_or_function(t, only_save_dependencies=True)
+        subselect_names, dep_attr = get_subselect_names(dep_attr)
+        attributes.extend(dep_attr)
+        comment = ""
+        try:
+            last_nonws_subtoken = get_last_nonws_token(t.tokens)
+            if is_comment(last_nonws_subtoken):
+                comment = split_comment(last_nonws_subtoken)[0]
+        except:
+            pass
+        # Zde musi v subselect_names byt alespon jeden prvek!
+        attributes.append(Attribute(name=get_op_prefix(subselect_names), condition=Attribute.CONDITION_SINGLE_ELEMENT, comment=comment))
         return attributes
     if isinstance(t, sql.Parenthesis) or isinstance(t, sql.Where):
         # Projdeme t.tokens a postupne rekurzivne zpracujeme kazdy z patricnych sub-tokenu. Zaroven potrebujeme referenci na posledni token v t.tokens, abychom pripadne mohli predat relevantni komentar zpet do hlavni casti kodu. Zohlednit musime i pripadne klicove slovo WHERE.
@@ -1468,7 +1530,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             else:
                 table.conditions.extend(attributes)
         else:
-            # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (context) a pripadnem komentari pred tokenem (comment_before). Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jleikoz v miste uziti PIVOT uz je context == None, tzn. process_token(...) vrati None.
+            # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (context) a pripadnem komentari pred tokenem (comment_before). Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jelikoz v miste uziti PIVOT uz je context == None, tzn. process_token(...) vrati None.
             obj = process_token(t, table, context, comment_before)
             # Navratova hodnota process_token(...) muze byt ruznych typu v zavislosti na kontextu apod. Na zaklade toho se nyni rozhodneme, jakym konkretnim zpusobem je potreba s ni nalozit.
             if obj != None:
@@ -1483,7 +1545,30 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 if last_attribute.condition == Attribute.CONDITION_COMMENT:
                                     # Komentar ulozime jedine v pripade, ze -- po orezani mezer pod. v konstruktoru -- neni None
                                     if last_attribute.comment != None:
+
+                                        # TODO: nastavit ke split_attribute, pokud existuje?
+
                                         join_table.set_comment(last_attribute.comment)
+                                    obj.pop()
+                                elif last_attribute.condition == Attribute.CONDITION_SINGLE_ELEMENT:
+                                    # Ke zpracovani jsme dostali jen jednu cast podminky (LHS, operator, prip. RHS)
+                                    if split_attribute == None:
+                                        # Zpracovavali jsme LHS (name == jmeno, comment == pripadny komentar)
+                                        split_attribute = last_attribute
+                                        # Resetujeme podminku, ktera uz nyni neni potreba
+                                        split_attribute.condition = None
+                                    elif split_attribute.condition == None:
+                                        # Zpracovavali jsme operator (name == operator, comment == pripadny komentar)
+                                        split_attribute.condition = last_attribute.name
+                                        if last_attribute.comment != None and len(last_attribute.comment) > 0:
+                                            split_attribute.comment = last_attribute.comment
+                                    else:
+                                        # Zpracovavali jsme RHS (name == zbytek podminky za operatorem, comment == pripadny komentar)
+                                        split_attribute.condition += " " + last_attribute.name
+                                        if last_attribute.comment != None and len(last_attribute.comment) > 0:
+                                            split_attribute.comment = last_attribute.comment
+                                        join_table.conditions.append(split_attribute)
+                                        split_attribute = None
                                     obj.pop()
                             # Zkontrolujeme, zda mezi podminkami nebylo "EXISTS ( SELECT ... )", a pripadne aktualizujeme zavislosti a podminky u join_table. Pozor: JOIN je vzdy zavislosti predchoziho selectu (UNION SELECT apod.)!
                             last_select_table = Table.get_table_by_id(last_select_table_id)
@@ -1705,7 +1790,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 elif prev_context == "on":  # Zde musime kontrolovat prev_context, jelikoz pro "ON EXISTS (SELECT ... )" je aktualni kontext jiny!
                                     join_table.link_to_table_id(src_table_info.id)
                                     src_table_info.copy_bind_vars_to_table(join_table)
-                                    join_table.conditions.append(Attribute(name=f"<{src_table_info.name}>", comment=comment_before))
+                                    join_table.conditions.append(Attribute(name=get_op_prefix([f"<{src_table_info.name}>"]), comment=comment_before))
                                 else:
                                     last_select_table.link_to_table_id(src_table_info.id)
                                 # Do hlavni tabulky jeste potrebujeme zkopirovat (a) zjistene aliasy a (b) pripadne placeholdery
@@ -1735,7 +1820,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 t = next_token
                 (j, next_token) = s.token_next(i, skip_ws=False, skip_cm=False)
             if next_token != None:
-                # Hinty MATERIALIZE a NO_STAR_TRANSFORMATION jsou vraceny jako Identifier, "USE_HASH (arg)"" a "USE_NL (arg)" potom jako Function (tzn. zaroven se zavorkou s argumenty). Mezera mezi hintem a zavorkou bude pritomna vzdy, jelikoz toto mame predem osetreno kosmetickou nahradou vq zdrojovem SQL.
+                # Hinty MATERIALIZE a NO_STAR_TRANSFORMATION jsou vraceny jako Identifier, "USE_HASH (arg)" a "USE_NL (arg)" potom jako Function (tzn. zaroven se zavorkou s argumenty). Mezera mezi hintem a zavorkou bude pritomna vzdy, jelikoz toto mame predem osetreno kosmetickou nahradou vq zdrojovem SQL.
                 next_token_upper = next_token.value.upper()
                 while (next_token_upper in ["MATERIALIZE", "NO_STAR_TRANSFORMATION"]
                         or next_token_upper.startswith("USE_HASH (")
@@ -1934,7 +2019,7 @@ def replace_match_case(old_str, new_str, text, whole_words=True):
     def f_match_case(match):
         g = match.group()
         res = []
-        min_len = min(len(old_str.replace("\\", "")), len(new_str.replace("\\", "")))
+        min_len = min(len(g), len(new_str))
         for i in range(min_len):
             if g[i].isupper():
                 res.append(new_str[i].upper())
@@ -2020,7 +2105,13 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_test.sql"
         # source_sql = "./test-files/Studenti_recyklanti_do_1.r.sql"
         # source_sql = "./test-files/Studis_PV_volba_insert.sql"
-        source_sql = "./test-files/Studis_PV_volba_prerekvizity_check.sql"
+        # source_sql = "./test-files/Studis_PV_volba_prerekvizity_check.sql"
+        # source_sql = "./test-files/Studis_PV_volba_prerekvizity_check_debug.sql"
+        # source_sql = "./test-files/T2_Hodnoceni_studenta_predmety_03_bind.sql"
+        # source_sql = "./test-files/T2_Hodnoceni_studenta_predmety_orig.sql"
+        # source_sql = "./test-files/Temata_PHD_skolitele_pocty.sql"
+        # source_sql = "./test-files/Terminy_kolidujici_pocty_studentu_hodnoceni_prehled.sql"
+        source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
