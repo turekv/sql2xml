@@ -821,6 +821,21 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     i -= 1
                 condition = " ".join(components)
                 attributes.append(Attribute(name=prev_token_normalized, condition=condition, comment=comment))
+            elif token.normalized == "START":
+                # Podminka obsahuje i cast "[START] [WITH] [...]" --> preskocime nasledujici dva tokeny ("WITH ...") a u posledniho z nich dohledame pripadne zavislosti; pozor: zde preskakujeme i komentare
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)  # "[WITH]"
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)  # "[...]"
+                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+            elif token.normalized == "CONNECT":
+                # Podminka obsahuje i cast "[CONNECT] [BY] [[NOCYCLE]]" --> preskocime na nasledujici token ("BY"), ale pripadne (volitelne!) klicove slovo "NOCYCLE" vyresime oddelene; pozor: zde preskakujeme i komentare
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)  # "[BY]"
+            elif token.normalized == "NOCYCLE":
+                # Podminka obsahuje i cast "[CONNECT] [BY] [NOCYCLE]" --> nedelame nic, skok na dalsi token probehne na konci cyklu
+                pass
+            elif token.normalized == "PRIOR":
+                # Podminka obsahuje i cast "PRIOR ..." --> preskocime na nasledujici token a dohledame u nej pripadne zavislosti; pozor: zde preskakujeme i komentare
+                (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)
+                attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
             elif isinstance(token, sql.Parenthesis) and first_dml_token_is_select(token.tokens):
                 # Subselect je soucasti podminky (napr. "( SELECT ... ) BETWEEN ..."). Dohledame tedy zavislosti, na konci cyklu nastavime prev_token_value (protoze token je typu Parenthesis) a v ukladani zbytku tokenu budeme pokracovat v dalsi iteraci (budou pritom take z attributes extrahovna jmena subselectu).
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
@@ -2111,7 +2126,10 @@ if __name__ == "__main__":
         # source_sql = "./test-files/T2_Hodnoceni_studenta_predmety_orig.sql"
         # source_sql = "./test-files/Temata_PHD_skolitele_pocty.sql"
         # source_sql = "./test-files/Terminy_kolidujici_pocty_studentu_hodnoceni_prehled.sql"
-        source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
+        # source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
+        source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
+        source_sql = "./test-files/Terminy_registrace_poradi.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
+        source_sql = "./test-files/TMP210_profese_t1_new.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
