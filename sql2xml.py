@@ -245,7 +245,17 @@ class Table:
         # Alias uz je ulozeny z drivejska, takze vratime False
         return False
     
-    def add_missing_attributes(self, new_attributes: list) -> None:
+    def get_std_attribute_count(self) -> int:
+        """Vraci predpokladany pocet standardnich atributu (tzn. vc. pripadnych TBD) ulozenych u tabulky v kolekci attributes"""
+        if self.attributes == None:
+            return 0
+        count = 0
+        for attribute in self.attributes:
+            if attribute.is_standard_attribute() or attribute.condition == Attribute.CONDITION_TBD:
+                count += 1
+        return count
+    
+    def add_missing_attributes(self, new_attributes: list, target_count=0) -> None:
         """Prida k aktualni tabulce pripadne chybejici atributy ze zadane kolekce. Namisto pridavani atributu ze zadane kolekce jsou vytvareny jejich "hluboke" kopie a kolekce new_attributes ani neni nijak jinak menena, aby bylo mozne ji pouzit pro naslednou aktualizaci dalsi tabulky (table vs. union_table). Metoda nic nevraci."""
         if new_attributes == None or len(new_attributes) == 0:
             return
@@ -263,11 +273,25 @@ class Table:
             for new_attr in new_attributes:
                 self.attributes.append(new_attr.deep_copy())
             return
+        # Pokud byl specifikovan cilovy pocet atributu (target_count > 0), pridame nejvyse tolik atributu ze zacatku kolekce new_attributes, kolik jich je potreba pro dosazeni tohoto ciloveho poctu atributu (hodi se napr. v pripade, ze resime UNION SELECT, kde byl namisto std. atributu uveden pouze vycet nekolika NULL).
+        if target_count > 0:
+            add_count = target_count - self.get_std_attribute_count()
+            if add_count > 0:
+                i = 0
+                while i < add_count and i < len(new_attributes):
+                    self.attributes.append(new_attributes[i].deep_copy())
+                    i += 1
+            return
         # Jsme v situaci, kdy obe kolekce obsahuji alespon jeden specificky atribut (ne "hvezdickovy"). Rozhodovani na zaklade kratkych jmen, resp. aliasu (nutno u literalu) nemusi vubec byt "neprustrelne", ale nic jineho nam nezbyva, protoze atributy mohou byt vlivem chyb v sqlparse vraceny po castech.
+        # Atribut "NULL" (napr. v UNION SELECT se muze bezne vyskytnout sekvence NULL namisto standardnich atributu) zde de facto jen indikuje existenci atributu. Jelikoz:
+        #   * aktualizace atributu u hlavni tabulky (table) podle atributu u union_table m smysl provadet pouze pomoci non-NULL atributu a
+        #   * u union_table pridavame atributy na zaklade potrebneho poctu (dle table),
+        # budeme NULL atributy pri aktualizacich ignorovat.
         for new_attr in new_attributes:
             attr_missing = True
             for attr in self.attributes:
-                if ((attr.short_name != None
+                if (new_attr.name.upper() == "NULL"
+                        or (attr.short_name != None
                         and new_attr.short_name != None
                         and attr.short_name.lower() == new_attr.short_name.lower())
                         or (attr.alias != None
@@ -277,6 +301,16 @@ class Table:
                     break
             if attr_missing:
                 self.attributes.append(new_attr.deep_copy())
+    
+    def get_last_std_attribute(self) -> Attribute:
+        """Vraci posledni standardni atribut ulozeny u tabulky, prip. None, pokud zadny takovy atribut neexistuje"""
+        attr_count = len(self.attributes)
+        if attr_count == 0:
+            return None
+        for i in range(attr_count - 1, -1, -1):
+            if self.attributes[i].is_standard_attribute():
+                return self.attributes[i]
+        return None
     
     # def mirror_attributes_to_table(self, target_table: "Table") -> None:
     #     """Zrcadli atributy z aktualni tabulky do cilove tabulky (vytvari "hluboke" kopie atributu)"""
@@ -1070,6 +1104,10 @@ def process_with_element(t, comment_before="") -> str:
 
 def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=False) -> list:
     """Zpracuje token typu Identifier nebo Function a vrati odpovidajici atribut. Je-li pro popsani atributu potreba mezi-tabulka (napr. pokud je misto obycejneho atributu "( SELECT ... )" nebo "( CASE ... )"), vrati krome odpovidajiciho atributu i fiktivni atribut s udajem pro svazani nadrazene tabulky s nove vytvorenou mezi-tabulkou (name == alias == condition == None, comment == ID mezi-tabulky). Parametr only_save_dependencies urcuje, zda chceme ukladat nalezene atributy, nebo nas zajimaji jen pripadne zavislosti na jinych tabulkach."""
+    # NULL nelze vyresit nahradami nahodnym retezcem, jelikoz pak selhava parsovani podminek (IS [NOT] NULL apod.) --> pripadne NULLy v rolich literalu musime doresit rucne
+    if not only_save_dependencies and t.normalized == "NULL":
+        # NULL v roli literalu musime ulozit, pokud se neukladaji pouze zavislosti. Pripadny komentar (napr. "NULL, NULL -- komentar \n , NULL") nikdy neni soucasti tokenu, takze muzeme rovnou vratit patricny atribut obsahujici pouze jmeno.
+        return [Attribute(name=t.normalized)]
     if (t.is_whitespace
             or t.ttype == sql.T.Punctuation
             or t.ttype == sql.T.Keyword
@@ -1099,7 +1137,7 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
         if isinstance(last_nonws_token, sql.Identifier) and last_nonws_token.value.lower() == "within":
             # Musi byt s mezerami na zacatku/konci, aby naopak funkce (COUNT apod.) mohly byt bez mezer mezi nazvem a zavorkou
             split_attr_link = " WITHIN GROUP "
-        elif last_nonws_token.ttype == sql.T.Keyword:
+        elif last_nonws_token.ttype == sql.T.Keyword and last_nonws_token.normalized != "NULL":
             split_attr_link = ""
         elif last_nonws_token.ttype in sql.T.Literal:
             # Pokud je posledni non-whitespace subtoken typu Keyword nebo Literal, je pravdepodobne, ze vlivem BUGu v sqlparse doslo k umelemu rozdeleni vyctu atributu na vice tokenu (u Literalu napr. v situaci "SELECT ..., Literal alias", tzn. kdyz mezi Literalem a aliasem NENI "AS").
@@ -1119,7 +1157,9 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
                 continue
             attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=only_save_dependencies))
             # BUG: posledni token je Identifier (napr. pokud v SQL kodu je "NVL (...)", tzn. s mezerou mezi nazvem funkce a zavorkou). Ulozime tedy nazev funkce; ze jde o rozdeleny atribut, bude nastaveno na konci metody na zaklade promenne split_attr_link == "" (prirazeno vyse).
-            if token == last_nonws_token and token.ttype == sql.T.Keyword:
+            if (token == last_nonws_token
+                    and token.ttype == sql.T.Keyword
+                    and last_nonws_token.normalized != "NULL"):
                 attributes.append(Attribute(name=token.value))
     elif isinstance(t, sql.Parenthesis):
         # Nasli jsme zavorku, jejiz obsah je potreba projit. Zde musime zkontrolovat druhy non-whitespace token z first-token (jelikoz ten prvni je oteviraci zavorkou) a vec doresit dle situace.
@@ -1230,9 +1270,9 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
         elif t.ttype == sql.T.Wildcard:
             # Typicky "SELECT * FROM ..."
             attributes.append(Attribute(name="*"))
-        elif t.ttype in sql.T.Literal:
+        elif t.ttype in sql.T.Literal or t.normalized == "NULL":
             # Nasli jsme literal (typicky v situaci, kdy je ve WITH definovana pomocna tabulka s konkretnimi -- v SQL kodu zadanymi -- hodnotami)
-            attributes.append(Attribute(name=t.value))
+            attributes.append(Attribute(name=t.normalized))
         return attributes
     if context == "from" or context == "join":
         # Token je v kontextu FROM ("SELECT ... FROM <token>"), prip. JOIN (napr. "SELECT ... FROM ... INNER JOIN <token>"). V obou pripadech muze byt token jak typu Parenthesis ("SELECT ... FROM ( SELECT ... )", "... JOIN ( SELECT ... )"), tak muze jit o prosty nazev zdrojove tabulky + pripadny alias a komentar.
@@ -1375,7 +1415,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
             comment_before = split_comment(t)[1]
             token_counter = 0
-        elif t.ttype == sql.T.Keyword:
+        elif t.ttype == sql.T.Keyword and t.normalized != "NULL":
             # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni context
             if t.normalized == "FROM":
                 prev_context = context
@@ -1589,16 +1629,21 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 if isinstance(obj, list) and len(obj) > 0:
                     if isinstance(obj[0], Attribute):
                         # Ziskali jsme seznam atributu
-                        # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Nejprve tedy projdeme vraceny seznam atributu a kdyz bude u prvniho standardniho atributu komentar prazdny, nahradime ho obsahem promenne comment_before. Pro urychleni ale budeme seznam prochazet jedine v pripade, ze comment_before != "".
+                        # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (obj). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
                         if len(comment_before) > 0:
-                            j = 0
-                            while j < len(obj):
-                                attribute = obj[j]
-                                if attribute.is_standard_attribute():
-                                    if attribute.comment == None or len(attribute.name) == 0:
-                                        attribute.comment = comment_before
-                                    break
-                                j += 1
+                            last_std_attribute = Table.get_table_by_id(last_select_table_id).get_last_std_attribute()
+                            if last_std_attribute != None:
+                                if last_std_attribute.comment == None or len(last_std_attribute.name) == 0:
+                                        last_std_attribute.comment = comment_before
+                            else:
+                                j = 0
+                                while j < len(obj):
+                                    attribute = obj[j]
+                                    if attribute.is_standard_attribute():
+                                        if attribute.comment == None or len(attribute.name) == 0:
+                                            attribute.comment = comment_before
+                                        break
+                                    j += 1
                         # Nyni pokracujeme ve zpracovavani seznamu atributu 
                         if context == "on":
                             # Pokud jsme pri nacitani atributu v "JOIN ... ON ..."" nasli jako posledni sub-token komentar, jde o komentar k mezi-tabulce reprezentujici JOIN. Do seznamu atributu byl v takovem pripade jako posledni pridat fiktivni atribut s nesmyslnymi parametry (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_COMMENT, comment != None), ze ktereho nyni komentar ziskame zpet a priradime ho k dane tabulce.
@@ -1801,7 +1846,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     j += 1
                             # Nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky -- opet do table i union_table (pokud zrovna resime UNION SELECT). Musime ale zohlednit pripad, kdy je kompletni vycet atributu v puvodnim SELECT i nyni v UNION SELECT, jinak by u tabulky byly atributy uvedeny dvakrat.
                             if union_table != None:
-                                union_table.add_missing_attributes(obj)
+                                union_table.add_missing_attributes(obj, target_count=table.get_std_attribute_count())
                                 table.add_missing_attributes(obj)
                             else:
                                 # Zde pracujeme pouze se standardni tabulkou a muzeme tedy atributy pridat primo pomoci .extend(...)
@@ -1952,8 +1997,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         can_switch_to_prev_context = (can_switch_to_prev_context
                                 and (context == "exists-select"  # Po zpracovani EXIST SELECT se potrebujeme vratit k predchozimu kontextu
                                 or not (token_was_operator
+                                or is_comment(next_token)
                                 or next_token.ttype in sql.T.Operator
-                                or next_token_upper in ["OVER", "AND", "OR", "NOT", "CYCLE", "SET", "TO", "DEFAULT", "USING", "DISTINCT", ","])))
+                                or next_token_upper in ["OVER", "AND", "OR", "NOT", "CYCLE", "SET", "TO", "DEFAULT", "USING", "DISTINCT", "NULL", ","])))
             if can_switch_to_prev_context and split_attribute == None:
                 # Pokud resime JOIN a dokoncili jsme parsovani casti ON, muzeme k tabulce ulozit jeji SQL kod
                 if context == "on" and join_table != None:
@@ -2191,7 +2237,14 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Ucty_organizaci.sql"
         source_sql = "./test-files/Vizitky_mistnost_id_doplneni.sql"  # DORESIT -- rozdeleny WITH blok "[mistnosti as (] [...]" -- pomohlo by pridat mezeru pred "SELECT"?
         # source_sql = "./test-files/Zav_prace_predb_zad_seznam_teacher_nezprac.sql"
-        source_sql = "./test-files/Zav_prace_prehled_praci_souboru_Apollo.sql"
+        # source_sql = "./test-files/Zav_prace_prehled_praci_souboru_Apollo.sql"
+        # source_sql = "./test-files/Zav_prace_prehled_predb_zadani_Teacher2.sql"
+        # source_sql = "./test-files/Zav_prace_prehled_predb_zadani_Teacher2b.sql"
+        # source_sql = "./test-files/Zav_prace_teacher_oponenti.sql"
+        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni.sql"
+        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_HEVA.sql"
+        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Tomecek.sql"
+        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Vasikova_uznane.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
