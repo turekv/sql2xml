@@ -2312,7 +2312,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Vasikova_uznane.sql"
         # source_sql = "./test-files/_Bindovane_promenne_ukazka.sql"
         # source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
-        source_sql = "./test-files/Promoce_registrace_FSI_view.sql"
+        # source_sql = "./test-files/Promoce_registrace_FSI_view.sql"
+        source_sql = "./test-files/V_statistika_uchazeci.sql"  # DORESIT -- KW GRANT atd.
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -2363,12 +2364,17 @@ if __name__ == "__main__":
         replacements[" use_nl\\("] = " use_nl ("
         replacements["\\nuse_nl\\("] = "\nuse_nl ("
         replacements["\\tuse_nl\\("] = "\tuse_nl ("
-        # COUNT(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
+        # COUNT(...) a NVL(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
         replacements[" count \\("] = " count("
         replacements["\\ncount \\("] = "\ncount("
         replacements["\\tcount \\("] = "\tcount("
         replacements[",count \\("] = ", count("
         replacements["\\(count \\("] = "( count("
+        replacements[" nvl \\("] = " nvl("
+        replacements["\\nnvl \\("] = "\nnvl("
+        replacements["\\tnvl \\("] = "\tnvl("
+        replacements[",nvl \\("] = ", nvl("
+        replacements["\\(nvl \\("] = "( nvl("
         # Za kazdou uzaviraci zavorkou potrebujeme mezeru, abychom podchytili pripad "funkce()alias" (toto by cele bylo vraceno jako jmeno, alias by chybel)
         replacements["\\)"] = ") "
         # # Podobne, byt uz ciste z kosmetickych duvodu vzhledem k nahradam zavorek, upravime vyskyty carek.
