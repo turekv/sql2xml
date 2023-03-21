@@ -245,62 +245,62 @@ class Table:
         # Alias uz je ulozeny z drivejska, takze vratime False
         return False
     
-    def get_std_attribute_count(self) -> int:
-        """Vraci predpokladany pocet standardnich atributu (tzn. vc. pripadnych TBD) ulozenych u tabulky v kolekci attributes"""
-        if self.attributes == None:
-            return 0
-        count = 0
-        for attribute in self.attributes:
-            if attribute.is_standard_attribute() or attribute.condition == Attribute.CONDITION_TBD:
-                count += 1
-        return count
+    # def get_std_attribute_count(self) -> int:
+    #     """Vraci predpokladany pocet standardnich atributu (tzn. vc. pripadnych TBD) ulozenych u tabulky v kolekci attributes"""
+    #     if self.attributes == None:
+    #         return 0
+    #     count = 0
+    #     for attribute in self.attributes:
+    #         if attribute.is_standard_attribute() or attribute.condition == Attribute.CONDITION_TBD:
+    #             count += 1
+    #     return count
     
-    def add_missing_attributes(self, new_attributes: list, target_count=0) -> None:
-        """Prida k aktualni tabulce pripadne chybejici atributy ze zadane kolekce. Namisto pridavani atributu ze zadane kolekce jsou vytvareny jejich "hluboke" kopie a kolekce new_attributes ani neni nijak jinak menena, aby bylo mozne ji pouzit pro naslednou aktualizaci dalsi tabulky (table vs. union_table). Metoda nic nevraci."""
-        if new_attributes == None or len(new_attributes) == 0:
-            return
-        # Pokud je aktualni kolekce atributu prazdna, proste pridamem co jsme dostali
-        if len(self.attributes) == 0:
-            for new_attr in new_attributes:
-                self.attributes.append(new_attr.deep_copy())
-            return
-        # V akt. kolekci uz neco je a dostali jsme alespon jeden novy atribut. Pokud nova kolekce obsahuje prave jeden "hvezdickovy" ("[table.]*") atribut, nema smysl cokoliv aktualizovat
-        if len(new_attributes) == 1 and new_attributes[0].name.endswith("*"):
-            return
-        # Nyni zkontrolujeme aktualni kolekci -- je tam pouze jeden "hvezdickovy" atribut? Pokud ano, obsah stav. kolekce nahradime obsahem new_attributes (kde uz vime, ze nejde pouze o jeden "hvezdickovy" atribut)
-        if len(self.attributes) == 1 and self.attributes[0].name.endswith("*"):
-            self.attributes.clear()
-            for new_attr in new_attributes:
-                self.attributes.append(new_attr.deep_copy())
-            return
-        # Pokud byl specifikovan cilovy pocet atributu (target_count > 0), pridame nejvyse tolik atributu ze zacatku kolekce new_attributes, kolik jich je potreba pro dosazeni tohoto ciloveho poctu atributu (hodi se napr. v pripade, ze resime UNION SELECT, kde byl namisto std. atributu uveden pouze vycet nekolika NULL).
-        if target_count > 0:
-            add_count = target_count - self.get_std_attribute_count()
-            if add_count > 0:
-                i = 0
-                while i < add_count and i < len(new_attributes):
-                    self.attributes.append(new_attributes[i].deep_copy())
-                    i += 1
-            return
-        # Jsme v situaci, kdy obe kolekce obsahuji alespon jeden specificky atribut (ne "hvezdickovy"). Rozhodovani na zaklade kratkych jmen, resp. aliasu (nutno u literalu) nemusi vubec byt "neprustrelne", ale nic jineho nam nezbyva, protoze atributy mohou byt vlivem chyb v sqlparse vraceny po castech.
-        # Atribut "NULL" (napr. v UNION SELECT se muze bezne vyskytnout sekvence NULL namisto standardnich atributu) zde de facto jen indikuje existenci atributu. Jelikoz:
-        #   * aktualizace atributu u hlavni tabulky (table) podle atributu u union_table m smysl provadet pouze pomoci non-NULL atributu a
-        #   * u union_table pridavame atributy na zaklade potrebneho poctu (dle table),
-        # budeme NULL atributy pri aktualizacich ignorovat.
-        for new_attr in new_attributes:
-            attr_missing = True
-            for attr in self.attributes:
-                if (new_attr.name.upper() == "NULL"
-                        or (attr.short_name != None
-                        and new_attr.short_name != None
-                        and attr.short_name.lower() == new_attr.short_name.lower())
-                        or (attr.alias != None
-                        and new_attr.alias != None
-                        and attr.alias.lower() == new_attr.alias.lower())):
-                    attr_missing = False
-                    break
-            if attr_missing:
-                self.attributes.append(new_attr.deep_copy())
+    # def add_missing_attributes(self, new_attributes: list, target_count=0) -> None:
+    #     """Prida k aktualni tabulce pripadne chybejici atributy ze zadane kolekce. Namisto pridavani atributu ze zadane kolekce jsou vytvareny jejich "hluboke" kopie a kolekce new_attributes ani neni nijak jinak menena, aby bylo mozne ji pouzit pro naslednou aktualizaci dalsi tabulky (table vs. union_table). Metoda nic nevraci."""
+    #     if new_attributes == None or len(new_attributes) == 0:
+    #         return
+    #     # Pokud je aktualni kolekce atributu prazdna, proste pridamem co jsme dostali
+    #     if len(self.attributes) == 0:
+    #         for new_attr in new_attributes:
+    #             self.attributes.append(new_attr.deep_copy())
+    #         return
+    #     # V akt. kolekci uz neco je a dostali jsme alespon jeden novy atribut. Pokud nova kolekce obsahuje prave jeden "hvezdickovy" ("[table.]*") atribut, nema smysl cokoliv aktualizovat
+    #     if len(new_attributes) == 1 and new_attributes[0].name.endswith("*"):
+    #         return
+    #     # Nyni zkontrolujeme aktualni kolekci -- je tam pouze jeden "hvezdickovy" atribut? Pokud ano, obsah stav. kolekce nahradime obsahem new_attributes (kde uz vime, ze nejde pouze o jeden "hvezdickovy" atribut)
+    #     if len(self.attributes) == 1 and self.attributes[0].name.endswith("*"):
+    #         self.attributes.clear()
+    #         for new_attr in new_attributes:
+    #             self.attributes.append(new_attr.deep_copy())
+    #         return
+    #     # Pokud byl specifikovan cilovy pocet atributu (target_count > 0), pridame nejvyse tolik atributu ze zacatku kolekce new_attributes, kolik jich je potreba pro dosazeni tohoto ciloveho poctu atributu (hodi se napr. v pripade, ze resime UNION SELECT, kde byl namisto std. atributu uveden pouze vycet nekolika NULL).
+    #     if target_count > 0:
+    #         add_count = target_count - self.get_std_attribute_count()
+    #         if add_count > 0:
+    #             i = 0
+    #             while i < add_count and i < len(new_attributes):
+    #                 self.attributes.append(new_attributes[i].deep_copy())
+    #                 i += 1
+    #         return
+    #     # Jsme v situaci, kdy obe kolekce obsahuji alespon jeden specificky atribut (ne "hvezdickovy"). Rozhodovani na zaklade kratkych jmen, resp. aliasu (nutno u literalu) nemusi vubec byt "neprustrelne", ale nic jineho nam nezbyva, protoze atributy mohou byt vlivem chyb v sqlparse vraceny po castech.
+    #     # Atribut "NULL" (napr. v UNION SELECT se muze bezne vyskytnout sekvence NULL namisto standardnich atributu) zde de facto jen indikuje existenci atributu. Jelikoz:
+    #     #   * aktualizace atributu u hlavni tabulky (table) podle atributu u union_table m smysl provadet pouze pomoci non-NULL atributu a
+    #     #   * u union_table pridavame atributy na zaklade potrebneho poctu (dle table),
+    #     # budeme NULL atributy pri aktualizacich ignorovat.
+    #     for new_attr in new_attributes:
+    #         attr_missing = True
+    #         for attr in self.attributes:
+    #             if (new_attr.name.upper() == "NULL"
+    #                     or (attr.short_name != None
+    #                     and new_attr.short_name != None
+    #                     and attr.short_name.lower() == new_attr.short_name.lower())
+    #                     or (attr.alias != None
+    #                     and new_attr.alias != None
+    #                     and attr.alias.lower() == new_attr.alias.lower())):
+    #                 attr_missing = False
+    #                 break
+    #         if attr_missing:
+    #             self.attributes.append(new_attr.deep_copy())
     
     def get_last_std_attribute(self) -> Attribute:
         """Vraci posledni standardni atribut ulozeny u tabulky, prip. None, pokud zadny takovy atribut neexistuje"""
@@ -1430,13 +1430,16 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             if t.normalized == "FROM":
                 prev_context = context
                 context = "from"
-                # Musime jeste overit, jestli nemame ulozeny nejaky rozdeleny atribut s Literalem (tento mohl byt na konci seznamu bez aliasu, tzn. byl by docasne ve split_attribute a v tabulce by zatim chybel). V takovem pripade nastavime comment = condition = None a atribut pridame do patricne tabulky (table, resp. union_table).
+                # Musime jeste overit, jestli nemame ulozeny nejaky rozdeleny atribut s Literalem (tento mohl byt na konci seznamu bez aliasu, tzn. byl by docasne ve split_attribute a v tabulce by zatim chybel). V takovem pripade nastavime comment = condition = None a atribut pridame do last_select_table (== table, resp. union_table).
                 if split_attribute != None:
                     split_attribute.comment = None
                     split_attribute.condition = None
-                    if union_table != None:
-                        union_table.attributes.append(split_attribute)
-                    table.attributes.append(split_attribute)
+                    last_select_table = Table.get_table_by_id(last_select_table_id)
+                    if (len(last_select_table.attributes) > 0
+                            and last_select_table.attributes[-1].condition == Attribute.CONDITION_TBD):
+                        split_attribute.alias = last_select_table.attributes[-1].alias
+                        last_select_table.attributes.pop()
+                    last_select_table.attributes.append(split_attribute)
                     # Nakonec resetujeme promennou split_attribute
                     split_attribute = None
             elif "JOIN" in t.normalized:
@@ -1471,12 +1474,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             elif t.normalized == "OVER":
                 # Tato cast je nutna pro rucni obejiti chyby v sqlparse (BUG https://github.com/andialbrecht/sqlparse/issues/701 )
                 # Klicove slovo OVER a nasledna zavorka s pripadnym PARTITION BY apod. jsou vraceny jako dva tokeny oddelene od predchoziho tokenu s funkci. Pripadny alias a komentar jsou az soucasti tokenu se zavorkou. Prvni token s OVER tedy pridame do sql_components a nasledne z druheho tokenu zjistime pripadny alias a komentar.
-                if union_table != None:
-                    if len(union_table.attributes) == len(table.attributes):
-                        table.attributes.pop()
-                    split_attribute = union_table.attributes.pop()
-                else:
-                    split_attribute = table.attributes.pop()
+                last_select_table = Table.get_table_by_id(last_select_table_id)
+                split_attribute = last_select_table.attributes.pop()
                 # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
                 split_attribute.condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
                 split_attribute.comment = " OVER "
@@ -1872,13 +1871,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     # Komentar muzeme aktualizovat primo (bez vyuziti set_comment(...))
                                     table.attributes[j].comment = attr.comment
                                     j += 1
-                            # Nakonec pridame pripadne dalsi atributy, ktere byly zjisteny nad ramec aliasu uvedenych za nazvem tabulky -- opet do table i union_table (pokud zrovna resime UNION SELECT). Musime ale zohlednit pripad, kdy je kompletni vycet atributu v puvodnim SELECT i nyni v UNION SELECT, jinak by u tabulky byly atributy uvedeny dvakrat.
                             if union_table != None:
-                                union_table.add_missing_attributes(obj, target_count=table.get_std_attribute_count())
-                                table.add_missing_attributes(obj)
+                                # # Zpetna aktualizace atributu v hlavni tabulce (table) podle union_table zpusobovala obcas potize (sloupce zadane v UNION SELECT primo pomoci literalu byly v hlavni tabulce navic) --> aktualizovat budeme vyhradne tu tabulku, ktera je prave resena.
+                                # union_table.add_missing_attributes(obj, target_count=table.get_std_attribute_count())
+                                # table.add_missing_attributes(obj)
+                                union_table.attributes.extend(obj)
                             else:
-                                # Zde pracujeme pouze se standardni tabulkou a muzeme tedy atributy pridat primo pomoci .extend(...)
                                 table.attributes.extend(obj)
+
                         else:
                             # Ve zbylych situacich staci pridat nalezene atributy k aktualni tabulce (ktera uz u korektniho SQL kodu nyni nemuze byt None)
                             table.attributes.extend(obj)
@@ -2064,7 +2064,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             table.source_sql = "".join(sql_components)
 
 
-# TODO: kontrolovat pritomnost lib. fiktivniho atributu + pripadne Exception, pokud u tabulky neco zbylo?
+# TODO: kontrolovat pritomnost lib. fiktivniho atributu + pripadne Exception, pokud u tabulky neco zbylo?    
 
 
 def process_remaining_link_attributes(attributes: list, copy_conditions=False) -> list:
@@ -2255,7 +2255,7 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Temata_PHD_skolitele_pocty.sql"
         # source_sql = "./test-files/Terminy_kolidujici_pocty_studentu_hodnoceni_prehled.sql"
         # source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
-        source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
+        # source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"
         # source_sql = "./test-files/Terminy_registrace_poradi.sql"
         # source_sql = "./test-files/TMP210_profese_t1_new.sql"
         # source_sql = "./test-files/TMP210_profese_t2_new.sql"
@@ -2273,6 +2273,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_HEVA.sql"
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Tomecek.sql"
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Vasikova_uznane.sql"
+        # source_sql = "./test-files/_Bindovane_promenne_ukazka.sql"
+        source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
