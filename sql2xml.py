@@ -312,6 +312,16 @@ class Table:
                 return self.attributes[i]
         return None
     
+    def get_last_std_condition(self) -> Attribute:
+        """Vraci posledni standardni podminku ulozenou u tabulky, prip. None, pokud zadna takova podminka neexistuje"""
+        attr_count = len(self.conditions)
+        if attr_count == 0:
+            return None
+        for i in range(attr_count - 1, -1, -1):
+            if self.conditions[i].is_standard_attribute():
+                return self.conditions[i]
+        return None
+    
     # def mirror_attributes_to_table(self, target_table: "Table") -> None:
     #     """Zrcadli atributy z aktualni tabulky do cilove tabulky (vytvari "hluboke" kopie atributu)"""
     #     if target_table == None:
@@ -1555,6 +1565,21 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             prev_context = context
             context = "where"
             attributes = get_attribute_conditions(t)
+            # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (obj). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
+            if len(comment_before) > 0:
+                attribute = Table.get_table_by_id(last_select_table_id).get_last_std_condition()
+                if attribute != None:
+                    if attribute.comment == None or len(attribute.comment) == 0:
+                            attribute.comment = comment_before
+                else:
+                    j = 0
+                    while j < len(obj):
+                        attribute = obj[j]
+                        if attribute.is_standard_attribute():
+                            if attribute.comment == None or len(attribute.comment) == 0:
+                                attribute.comment = comment_before
+                            break
+                        j += 1
             # Pokud jsme pri nacitani atributu nasli jako posledni sub-token komentar, jde temer jiste o komentar k nasledujicimu bloku SQL kodu. Fiktivni atribut s nesmyslnymi parametry (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_COMMENT, comment != None) nyni komentar ziskame zpet a aktualizujeme pomoci nej comment_before.
             if len(attributes) > 0:
                 last_attribute = attributes[-1]
@@ -1631,16 +1656,19 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Ziskali jsme seznam atributu
                         # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (obj). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
                         if len(comment_before) > 0:
-                            last_std_attribute = Table.get_table_by_id(last_select_table_id).get_last_std_attribute()
-                            if last_std_attribute != None:
-                                if last_std_attribute.comment == None or len(last_std_attribute.name) == 0:
-                                        last_std_attribute.comment = comment_before
+                            if context == "on" or context == "where":
+                                attribute = Table.get_table_by_id(last_select_table_id).get_last_std_condition()
+                            else:
+                                attribute = Table.get_table_by_id(last_select_table_id).get_last_std_attribute()
+                            if attribute != None:
+                                if attribute.comment == None or len(attribute.comment) == 0:
+                                        attribute.comment = comment_before
                             else:
                                 j = 0
                                 while j < len(obj):
                                     attribute = obj[j]
                                     if attribute.is_standard_attribute():
-                                        if attribute.comment == None or len(attribute.name) == 0:
+                                        if attribute.comment == None or len(attribute.comment) == 0:
                                             attribute.comment = comment_before
                                         break
                                     j += 1
@@ -2228,14 +2256,14 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Terminy_kolidujici_pocty_studentu_hodnoceni_prehled.sql"
         # source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
         source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
-        source_sql = "./test-files/Terminy_registrace_poradi.sql"  # DORESIT -- komentarem rozdeleny "WITH ( SELECT ... )"
+        # source_sql = "./test-files/Terminy_registrace_poradi.sql"
         # source_sql = "./test-files/TMP210_profese_t1_new.sql"
         # source_sql = "./test-files/TMP210_profese_t2_new.sql"
         # source_sql = "./test-files/TMP216_Bind_1.sql"
         # source_sql = "./test-files/TMP216_Bind_2.sql"
         # source_sql = "./test-files/TMP216_Prerekvizity_bind_ukazka.sql"
         # source_sql = "./test-files/Ucty_organizaci.sql"
-        source_sql = "./test-files/Vizitky_mistnost_id_doplneni.sql"  # DORESIT -- rozdeleny WITH blok "[mistnosti as (] [...]" -- pomohlo by pridat mezeru pred "SELECT"?
+        # source_sql = "./test-files/Vizitky_mistnost_id_doplneni.sql"
         # source_sql = "./test-files/Zav_prace_predb_zad_seznam_teacher_nezprac.sql"
         # source_sql = "./test-files/Zav_prace_prehled_praci_souboru_Apollo.sql"
         # source_sql = "./test-files/Zav_prace_prehled_predb_zadani_Teacher2.sql"
@@ -2297,10 +2325,10 @@ if __name__ == "__main__":
         replacements["\\tuse_nl\\("] = "\tuse_nl ("
         # COUNT(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
         replacements[" count \\("] = " count("
-        replacements[",count \\("] = ", count("
-        replacements["\\(count \\("] = "( count("
         replacements["\\ncount \\("] = "\ncount("
         replacements["\\tcount \\("] = "\tcount("
+        replacements[",count \\("] = ", count("
+        replacements["\\(count \\("] = "( count("
         # Za kazdou uzaviraci zavorkou potrebujeme mezeru, abychom podchytili pripad "funkce()alias" (toto by cele bylo vraceno jako jmeno, alias by chybel)
         replacements["\\)"] = ") "
         # # Podobne, byt uz ciste z kosmetickych duvodu vzhledem k nahradam zavorek, upravime vyskyty carek.
@@ -2320,6 +2348,8 @@ if __name__ == "__main__":
 
         # TODO: slo by takto vyresit i bug "within group"? (vyzadovalo by ale regex klic atd., jelikoz mezi slovy mohou byt bile znaky!)
 
+        # BUG: sqlparse neumi korektne zpracovat kod, kde se napr. jako literal (nebo jeho cast) vyskytuje "\". Ackoliv by nahrada pomoci reg. vyrazu "jednim smerem" (nutno escapovat: "\\\\" --> RANDOMSTRING) fungovala dobre, pri zpetne nahrade bychom dle ocekavani dostali "\\". Vec tedy vyresime tak, ze po provedeni pocatecnich nahrad zmenime klic u tohoto posledniho objektu na "\\".
+        replacements["\\\\"] = ("", False)
         lc_query = query.lower()
         generated_r_strs = []
         r_keys = replacements.keys()
@@ -2344,6 +2374,8 @@ if __name__ == "__main__":
             # Bezny string neumi case-insensitive nahrady --> musime provest pomoci modulu re
             (r_str, whole_words) = replacements[r_key]
             query = replace_match_case(r_key, r_str, query, whole_words=whole_words)
+        # Opravime klic (escapovana zpetna lomitka) u patricneho zaznamu ve slovniku nahrad, aby korektne fungovala i zpetna nahrada
+        replacements["\\"] = replacements.pop("\\\\")
 
         # Nyni muzeme zacit parsovat
         statements = parse(query, encoding=encoding)
