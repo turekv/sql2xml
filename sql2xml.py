@@ -1362,8 +1362,8 @@ def stripTrailingWSCP(sql_components: list) -> None:
         sql_components.pop()
         sc = sql_components[-1].rstrip()
     sql_components[-1] = sc
-    # Zavorka je vlivem ukladani token.value vzdy bez uvodnich/koncovych bilych znaku
-    if sql_components[-1] == ")":
+    # Zavorka (prip. strednik) je vlivem ukladani token.value vzdy bez uvodnich/koncovych bilych znaku
+    if sql_components[-1] == ")" or sql_components[-1] == ";":
         sql_components.pop()
     sc = sql_components[-1].rstrip()
     while len(sc) == 0:
@@ -1537,8 +1537,18 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # Kazde jine vyse neuvedene klicove slovo (u kterych nepredpokladame vyskyt parametru) proste na konci tohoto cyklu ulozime a nacteme dalsi token
 
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
-            prev_context = context
-            context = "with"
+            # Jde o WITH pro definici bloku, nebo o WITH jako soucast napr. "CREATE VIEW"?
+            (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=True)
+            while next_token != None:
+                if next_token.ttype == sql.T.Keyword and next_token.normalized in ["READ", "ONLY", "CHECK", "OPTION"] or next_token.ttype == sql.T.Punctuation:
+                    i = j
+                    t = next_token
+                    (j, next_token) = s.token_next(j, skip_ws=True, skip_cm=True)
+                else:
+                    break
+            if next_token != None:
+                prev_context = context
+                context = "with"
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
             if context == "union-select":
                 # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), budou odpovidajici tokeny vraceny sqlparse postupne a tudiz musime uz zde vytvorit patricnou mezi-tabulku. Jinak receno, k situaci je nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
@@ -1559,6 +1569,33 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         elif t.ttype == sql.T.DML and t.normalized == "MERGE":
             prev_context = context
             context = "merge"
+        elif t.ttype == sql.T.DDL:
+            if t.normalized == "DROP":
+                # Nasli jsme "DROP [VIEW ...]" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
+                return
+            elif t.normalized.startswith("CREATE"):
+                # Nasli jsme "CREATE [[OR REPLACE] [FORCE] VIEW ... ( ... ) AS SELECT ...]" -- preskocime vse az po posledni token po AS). Komentare zde preskakovat nemuzeme, protoze ten posledni pred SELECT muze byt relevantni. cast "... ( ...)" za klicovym slovem VIEW je vracena jako jeden token, coz nam znacne usnadni praci s hledanim SELECTu, ktery muze byt obalen zavorkami.
+                (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
+                while next_token != None:
+                    if is_comment(next_token):
+                        # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
+                        comment_before = split_comment(next_token)[1]
+                        token_counter = 0
+                    elif next_token.ttype == sql.T.Keyword and next_token.normalized == "AS":
+                        # Za klicovym slovem AS musi nutne nasledovat SELECT --> aktualizujeme index (i) a token (t) a muzeme vyskocit z cyklu a dale pokracovat standardnim zpusobem
+                        i = j
+                        t = next_token
+                        break
+                    elif ((next_token.ttype == sql.T.DML and next_token.normalized == "SELECT")
+                            or isinstance(next_token, sql.Parenthesis)):
+                        # Pri nalezeni SELECT nebo zavorky musime index nechat beze zmeny (na tokenu prilis nezalezi), jinak by v dalsim zpracovani byl SELECT (resp. zavorka) preskocen!
+                        break
+                    i = j
+                    t = next_token
+                    (j, next_token) = s.token_next(j, skip_ws=True, skip_cm=False)
+                # Dosli jsme az na konec statementu? (muze nastat jedine v pripade, ze tento neni korektni, nebo byl spatne parsovan sqlparse)
+                if next_token == None:
+                    return
         elif isinstance(t, sql.Where):
             # Kontext musime nastavit pro potreby pripadneho pozdejsiho odstraneni fiktivnich atributu se "spojkami" (BUG v sqlparse)
             prev_context = context
@@ -2274,7 +2311,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Tomecek.sql"
         # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Vasikova_uznane.sql"
         # source_sql = "./test-files/_Bindovane_promenne_ukazka.sql"
-        source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
+        # source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
+        source_sql = "./test-files/Promoce_registrace_FSI_view.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
