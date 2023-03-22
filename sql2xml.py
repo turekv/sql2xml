@@ -430,16 +430,24 @@ class Table:
         """Vrati odkaz na tabulku odpovidajici zadanemu jmenu (muze byt i alias), prip. None, pokud v kolekci Table.__tables__ zadna takova tabulka neexistuje. Najdeme-li dve rozdilne tabulky (jednu podle jmena a druhou podle aliasu), je potreba rozhodnout na zaklade jejich atributu pomoci match_attribute. Parametr exclude_table_id slouzi k odfiltrovani aktualne resene tabulky (tato nemuze byt zdrojem informaci sama pro sebe). Porovnavani jmen je case-sensitive!"""
         if name == None:
             return None
-        if alias_table == None:
-            statement_aliases = {}
-        else:
-            statement_aliases = alias_table.statement_aliases
+        statement_aliases = {}
+        if alias_table != None:
+            # Pro potreby porovnavani si zde vytvorime docasnou lowercase verzi kolekce aliasu
+            ids = alias_table.statement_aliases.keys()
+            for id in ids:
+                aliases = alias_table.statement_aliases[id]
+                for a in aliases:
+                    statement_aliases[id] = a.lower()
+        # Porovnavat budeme lowercase verze jmen
+        name = name.lower()
         # Dostali jsme v parametru obycejne jmeno (prip. alias), nebo kanonicke jmeno (vc. schematu)?
         bare_name_or_alias = name.rfind(".") < 0
         # Jestlize je zadane jmeno tabulky bez nazvu schematu, ale o tabulce stejneho jmena vc. explicitniho uvedeni nazvu schematu uz vime, jde pravdepodobne (byt ne zcela jiste) o tutez tabulku. Pozor: Oracle nema problem zpracovat i situace typu "SELECT stage.id ... FROM ... INNER JOIN (SELECT stage.stage_id AS id FROM org.stage) AS stage" -- v JOIN/SELECT evidentne referencujeme org.stage, nikoliv alias subselectu, zatimco v hlavnim SELECT referencujeme alias subselectu v JOIN).
         table_via_name = None
         table_via_alias = None
         for table in Table.__tables__:
+            # Nejprve si ulozime jmeno tabulky v lowercase verzi
+            table_name = table.name.lower()
             # Mame uz nalezeno jak podle jmena, tak podle aliasu?
             if table_via_name != None and table_via_alias != None:
                 break
@@ -447,15 +455,15 @@ class Table:
             if table.id == exclude_table_id:
                 continue
             trimmed_name = None
-            # Pokud jsme v parametru obdrzeli jmeno bez schematu a nazev tabulky (table.name) mame naopak ulozen vc. schematu, budeme se zadanym jmenem porovnavat i nazev tabulky bez schematu
+            # Pokud jsme v parametru obdrzeli jmeno bez schematu a nazev tabulky (table_name) mame naopak ulozen vc. schematu, budeme se zadanym jmenem porovnavat i nazev tabulky bez schematu
             if bare_name_or_alias:
-                i = table.name.rfind(".")
+                i = table_name.rfind(".")
                 if i > 0:
-                    trimmed_name = table.name[(i + 1):]
+                    trimmed_name = table_name[(i + 1):]
                 # Uvnitr podminky jeste rovnou porovname alias
                 if table.id in statement_aliases and name in statement_aliases[table.id]:
                     table_via_alias = table
-            if name == table.name or name == trimmed_name:
+            if name == table_name or name == trimmed_name:
                 table_via_name = table
         # Jestlize jsme tabulku nenasli podle nazvu a zaroven nemuze na zaklade match_attribute jit o tabulku z DB (zde by pri korektnim zadani byly v nazvu atributu dve tecky: "schema.tabulka.atribut"), vratime tabulku dle aliasu
         if table_via_name == None:
@@ -467,6 +475,8 @@ class Table:
         i = -1
         num_dots = -1
         if match_attribute != None:
+            # Opet potrebujeme lowercase verzi
+            match_attribute = match_attribute.lower()
             i = match_attribute.rfind(".")
             num_dots = match_attribute.count(".")
         if table_via_alias == None or match_attribute == None or num_dots > 1 or i < 0:
@@ -479,7 +489,7 @@ class Table:
             # Preskocime vsechny fiktivni atributy (tzn. s condition != None; toto si muzeme dovolit, jelikoz standardni podminky jsou ukladany do table.conditions)
             if attribute.condition != None:
                 continue
-            if attribute.short_name == match_name or attribute.alias == match_name:
+            if attribute.short_name.lower() == match_name or attribute.alias.lower() == match_name:
                 return table_via_alias
         # Jestlize jsme neobjevili shodu v tabulce nalezene podle aliasu, musi jit o atribut (snadno i takovy, o kterem explicitne nevime) z tabulky v DB
         return table_via_name
@@ -2341,8 +2351,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Predmety_nezarazene_do_planu_se_studenty.sql"
         # source_sql = "./test-files/Predmety_nezarazene_do_planu_zavrit-smazat.sql"
         # source_sql = "./test-files/Skupiny_PV_kontrola_limitu_predmetu.sql"
-        source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"   # DORESIT
-        source_sql = "./test-files/Sskup_registrace_prubeh.sql"   # DORESIT
+        source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"   # DORESIT ------------------------------------
+        source_sql = "./test-files/Sskup_registrace_prubeh.sql"   # DORESIT ------------------------------------
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015_en.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015_simulace.sql"
@@ -2350,11 +2360,21 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Stipendia_plneni_podminek_2016.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Simulace.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Studis.sql"
-        source_sql = "./test-files/Stipendia_plneni_podminek_2018.sql"  # DORESIT -- "rocniky_f" pry tabulka z DB, byt jde o WITH blok!
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2018.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2018_simulace.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2018_Studis.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2019.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2019_simulace.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2020_simulace.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2020_test.sql"
+        # source_sql = "./test-files/Studenti_preruseni_loni.sql"
+        # source_sql = "./test-files/Terminy_registrace_vicenasobna_stejny_termin.sql"  # DORESIT ------------------------------------
+        # source_sql = "./test-files/U-multirank_I_09_10_11_Graduated_students.sql"  # DORESIT ------------------------------------
+        # source_sql = "./test-files/Volba_oboru-kontrola_automatickeho_prirazeni.sql"
+        # source_sql = "./test-files/Volba_oboru-prehled_pro_ustavy_Apollo.sql"
+        # source_sql = "./test-files/Volba_specializace-prehled_pro_ustavy_Apollo.sql"
+        # source_sql = "./test-files/Vyuky_spatny_semestr_stud_skupiny_registrace.sql"
+        # source_sql = "./test-files/_Rekurze_Ansi_ukazka.sql"  # DORESIT ------------------------------------
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
