@@ -86,11 +86,12 @@ class Attribute:
         if comment == None:
             self.comment = None
             return
-        # Odstranime vsechny uvodni a koncove znaky oznacujici komentar + bile znaky
-        comment = comment.lstrip("-/* \n\t").rstrip("*/ \n\t")
-        if len(comment) == 0:
-            self.comment = None
-            return
+        # Pokud pracujeme se standardnim atributem, odstranime vsechny uvodni a koncove znaky oznacujici komentar + bile znaky, jinak komentar ulozime tak, jak jsme ho dostali (jelikoz tam napr. v pripade CONDITION_SPLIT_ATTRIBUTE_LINK muze byt operator minus/deleno/krat, ktere by orezavani nize odstranilo)
+        if self.is_standard_attribute():
+            comment = comment.lstrip("-/* \n\t").rstrip("*/ \n\t")
+            if len(comment) == 0:
+                self.comment = None
+                return
         self.comment = comment
     
     def deep_copy(self) -> "Attribute":
@@ -432,7 +433,7 @@ class Table:
             return None
         statement_aliases = {}
         if alias_table != None:
-            # Pro potreby porovnavani si zde vytvorime docasnou lowercase verzi kolekce aliasu
+            # Pro potreby porovnavani si zde vytvorime docasnou lowercase kopii statement aliasu
             ids = alias_table.statement_aliases.keys()
             for id in ids:
                 aliases = alias_table.statement_aliases[id]
@@ -739,6 +740,12 @@ def get_attribute_conditions(t: sql.Token) -> list:
         # Token je obycejnym srovnanim, takze staci do kolekce attributes pridat navratovou hodnotu process_comparison(...) (nelze vratit primo tuto navratovou hodnotu, tzn. objekt typu Attribute, protoze typ navratove hodnoty se pozdeji poziva k rozliseni, jak presne s takovou hodnotou nalozit). Zaroven musime namisto .append() pouzit .extend(), jelikoz je vlivem dohledavani zavislosti vracen seznam atributu, nikoliv pouze jeden atribut!
         attributes.extend(process_comparison(t))
         return attributes
+    if isinstance(t, sql.Case):
+        # Dohledame zavislosti (nemusime rucne po subtokenech, toto je provedeno ve volane metode)
+        attributes.extend(process_identifier_list_or_function(t, only_save_dependencies=True))
+        # Pridame samotnou podminku
+        attributes.append(Attribute(name=t.normalized, condition=Attribute.CONDITION_SINGLE_ELEMENT))
+        return attributes
     if t.ttype == sql.T.Comparison:  # != sql.Comparison!
         # BUG: pokud je v SQL kodu "JOIN ... ON ... AND name comment NOT IN ( SELECT ... )", vraci toto sqlparse jako oddelene tokeny ([name comment] [NOT IN] [(SELECT ... )]). Na tuto sekvenci pritom narazime primo v process_statement(...), tzn. tokeny jsou pak posilany oddelene do zdejsi metody. Situaci tedy musime nejprve detekovat a potom postupne vracet zpet nekompletni atributy (condition = Attribute.CONDITION_SINGLE_ELEMENT). Pokud by za operatorem byl komentar, byl by sqlparse vracen jako dalsi token, tzn. nema smysl toto zde resit.
         attributes.append(Attribute(name=t.normalized, condition=Attribute.CONDITION_SINGLE_ELEMENT))
@@ -833,8 +840,19 @@ def get_attribute_conditions(t: sql.Token) -> list:
         while token != None:
             # Nejprve vyresime BUG, kdy vlivem pridani komentare do operace rozdelene na vice radku (napr. "WHERE value > a -- komentar \n + b") dojde k rozdeleni podminky na vice tokenu
             if split_operation:
-                attributes[-1].condition += " " + token.value
+                attributes[-1].condition += " " + token.normalized  # Ulozime .normalized (tzn. bez pripadneho komentare)
                 split_operation = False
+                # Byl v posledni casti podminky komentar?
+                comment = ""
+                try:
+                    last_nonws_subtoken = get_last_nonws_token(t.tokens)
+                    if is_comment(last_nonws_subtoken):
+                        comment = split_comment(last_nonws_subtoken)[0]
+                except:
+                    pass
+                if len(comment) > 0 and (attributes[-1].comment == None or len(attributes[-1].comment) == 0):
+                    attributes[-1].set_comment(comment)
+                # Ted jeste dohledame pripadne zavislosti
                 dep_attr = process_identifier_list_or_function(token, only_save_dependencies=True)
                 subselect_names, dep_attr = get_subselect_names(dep_attr)
                 if len(subselect_names) > 0:
@@ -913,6 +931,8 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 # Podminka obsahuje i cast "PRIOR ..." --> preskocime na nasledujici token a dohledame u nej pripadne zavislosti; pozor: zde preskakujeme i komentare
                 (i, token) = t.token_next(i, skip_ws=True, skip_cm=True)
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
+            elif isinstance(token, sql.Case):
+                attributes.extend(get_attribute_conditions(token))
             elif isinstance(token, sql.Parenthesis) and first_dml_token_is_select(token.tokens):
                 # Subselect je soucasti podminky (napr. "( SELECT ... ) BETWEEN ..."). Dohledame tedy zavislosti, na konci cyklu nastavime prev_token_value (protoze token je typu Parenthesis) a v ukladani zbytku tokenu budeme pokracovat v dalsi iteraci (budou pritom take z attributes extrahovna jmena subselectu).
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
@@ -1177,11 +1197,13 @@ def process_identifier_list_or_function(t: sql.Token, only_save_dependencies=Fal
         if last_nonws_token == None:
             last_nonws_token = get_last_nonws_token(t.tokens)
         for token in t.tokens:
+            if token.is_whitespace:
+                continue
             # BUG (Literal): pokud jsme narazili na carku a posledni nalezeny atribut je s potencialne chybejicim aliasem, je zrejme, ze alias nebyl uveden. Podminku tedy z posledniho atributu odstranime.
-            if (token.ttype == sql.T.Punctuation
-                    and len(attributes) > 0
-                    and attributes[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING):
-                attributes[-1].condition = None
+            if token.ttype == sql.T.Punctuation:
+                if (len(attributes) > 0
+                        and attributes[-1].condition == Attribute.CONDITION_SPLIT_ATTRIBUTE_ALIAS_MISSING):
+                    attributes[-1].condition = None
                 # Muzeme rovnou pokracovat ve zpracovavani dalsiho tokenu
                 continue
             attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=only_save_dependencies))
@@ -1718,7 +1740,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Ziskali jsme seznam atributu
                         # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (obj). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
                         if len(comment_before) > 0:
-                            if context == "on" or context == "where":
+                            if split_attribute != None:
+                                attribute = split_attribute
+                            elif context == "on" or context == "where":
                                 attribute = Table.get_table_by_id(last_select_table_id).get_last_std_condition()
                             else:
                                 attribute = Table.get_table_by_id(last_select_table_id).get_last_std_attribute()
@@ -1737,7 +1761,10 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         # Nyni pokracujeme ve zpracovavani seznamu atributu 
                         if context == "on":
                             # Pokud jsme pri nacitani atributu v "JOIN ... ON ..."" nasli jako posledni sub-token komentar, jde o komentar k mezi-tabulce reprezentujici JOIN. Do seznamu atributu byl v takovem pripade jako posledni pridat fiktivni atribut s nesmyslnymi parametry (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_COMMENT, comment != None), ze ktereho nyni komentar ziskame zpet a priradime ho k dane tabulce.
-                            if len(obj) > 0:
+                            # Ve vracenem objektu mohou byt oba druhy fiktivnich atributu (CONDITION_COMMENT i CONDITION_SINGLE_ELEMENT) --> podivame se na dva posledni atributy
+                            processed_attribs = 0
+                            while len(obj) > 0 and processed_attribs < 2:
+                                processed_attribs += 1
                                 last_attribute = obj[-1]
                                 if last_attribute.condition == Attribute.CONDITION_COMMENT:
                                     # Komentar ulozime jedine v pripade, ze -- po orezani mezer pod. v konstruktoru -- neni None
@@ -2098,6 +2125,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     join_components.append(t.value)
                     # Jelikoz nyni mame cely JOIN zpracovany, lze k mezi-tabulce priradit i ji odpovidajici SQL kod. Referenci na tabulku ale resetovat nesmime! (na rozdil od union_table, kde je toto potreba). Na rozdil od [UNION] SELECT take nemusime z kolekce join_components odebirat koncove bile znaky/uzaviraci zavorku, protoze tyto se v kolekci nenachazi.
                     join_table.source_sql = "".join(join_components)
+                    # Musime vyresit pripadne fiktivni atributy vznikle vlivem podminek rozdelenych komentari na vice radku
+                    join_table.conditions = process_remaining_link_attributes(join_table.conditions, copy_conditions=True)
                 context = prev_context
         # Nakonec si ulozime kod tokenu do kolekci sql_components, join_components a union_components (je nutne aktualizovat vsechny!) a nacteme dalsi token
         sql_components.append(t.value)
@@ -2351,8 +2380,8 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Predmety_nezarazene_do_planu_se_studenty.sql"
         # source_sql = "./test-files/Predmety_nezarazene_do_planu_zavrit-smazat.sql"
         # source_sql = "./test-files/Skupiny_PV_kontrola_limitu_predmetu.sql"
-        source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"   # DORESIT ------------------------------------
-        source_sql = "./test-files/Sskup_registrace_prubeh.sql"   # DORESIT ------------------------------------
+        # source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"
+        # source_sql = "./test-files/Sskup_registrace_prubeh.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015_en.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2015_simulace.sql"
@@ -2368,13 +2397,13 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Stipendia_plneni_podminek_2020_simulace.sql"
         # source_sql = "./test-files/Stipendia_plneni_podminek_2020_test.sql"
         # source_sql = "./test-files/Studenti_preruseni_loni.sql"
-        # source_sql = "./test-files/Terminy_registrace_vicenasobna_stejny_termin.sql"  # DORESIT ------------------------------------
-        # source_sql = "./test-files/U-multirank_I_09_10_11_Graduated_students.sql"  # DORESIT ------------------------------------
+        # source_sql = "./test-files/Terminy_registrace_vicenasobna_stejny_termin.sql"
+        # source_sql = "./test-files/U-multirank_I_09_10_11_Graduated_students.sql"
         # source_sql = "./test-files/Volba_oboru-kontrola_automatickeho_prirazeni.sql"
         # source_sql = "./test-files/Volba_oboru-prehled_pro_ustavy_Apollo.sql"
         # source_sql = "./test-files/Volba_specializace-prehled_pro_ustavy_Apollo.sql"
         # source_sql = "./test-files/Vyuky_spatny_semestr_stud_skupiny_registrace.sql"
-        # source_sql = "./test-files/_Rekurze_Ansi_ukazka.sql"  # DORESIT ------------------------------------
+        source_sql = "./test-files/_Rekurze_Ansi_ukazka.sql"  # DORESIT ------------------------------------
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
