@@ -831,8 +831,11 @@ def get_attribute_conditions(t: sql.Token) -> list:
                     attributes[-1].condition = get_op_prefix(subselect_names)  # + ": " + attributes[-1].condition
                 attributes.extend(dep_attr)
             elif token.ttype in sql.T.Operator and len(attributes) > 0:
-                attributes[-1].condition += "\n " + token.value
+                attributes[-1].condition += " " + token.value
                 split_operation = True
+            elif token.ttype in sql.T.Literal and len(attributes) > 0:
+                # BUG v sqlparse (viz popis analogickeho pripadu nize v teto metode)
+                attributes[-1].condition += " " + token.value
             elif (prev_token_normalized != None
                     and (token.ttype in sql.T.Operator
                     or (token.ttype == sql.T.Keyword
@@ -905,7 +908,13 @@ def get_attribute_conditions(t: sql.Token) -> list:
                 attributes.extend(process_identifier_list_or_function(token, only_save_dependencies=True))
             elif is_comment(token):
                 # Z komentare nas zajima pouze cast za pripadnou delsi serii pomlcek
-                comment_before = split_comment(token)[1]
+                [attr_comment, comment_before] = split_comment(token)
+                if len(attributes) > 0:
+                    # Prvni cast komentare priradime k poslednimu standardnimu atributu (kontrolovat budeme zjednodusene pomoci name != None)
+                    for j in range(len(attributes) - 1, -1, -1):
+                        if attributes[j].name != None:
+                            attributes[j].set_comment(attr_comment)
+                            break
                 # Ukladat budeme jen neprazdny komentar (nikoliv vysledny komentar po zpracovani "-- \n" apod.)
                 if token == last_nonws_token:
                     # Zde jsme narazili na komentar k mezi-tabulce (napr. "JOIN ... ON ( ... ) komentar"), prip. komentar k nasledujicimu bloku v SQL kodu. Pridame fiktivni atribut (name == alias == None, condition == Attribute.CONDITION_COMMENT, comment != None), ze ktereho pak bude komentar extrahovan.
@@ -2227,7 +2236,7 @@ def replace_match_case(old_str, new_str, text, whole_words=True):
 
 
 if __name__ == "__main__":
-    write_debug_output = False
+    write_debug_output = False  # Po hromadném testu vratit zpet na False --------------------------
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
     if len(sys.argv) > 2:
         source_sql = str(sys.argv[1])
@@ -2320,7 +2329,32 @@ if __name__ == "__main__":
         # source_sql = "./test-files/_Bindovane_promenne_ukazka.sql"
         # source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
         # source_sql = "./test-files/Promoce_registrace_FSI_view.sql"
-        source_sql = "./test-files/V_statistika_uchazeci.sql"  # DORESIT -- KW GRANT atd.
+        # source_sql = "./test-files/V_statistika_uchazeci.sql"
+        # source_sql = "./test-files/IP_jazyk_chybi_po_zruseni.sql"
+        # source_sql = "./test-files/IP_jazyk_kontrola_pred_SZZ.sql"
+        # source_sql = "./test-files/IP_kontrola_historickych_IP.sql"
+        # source_sql = "./test-files/IP_nepretazene.sql"
+        # source_sql = "./test-files/IP_nepretazitelne.sql"
+        # source_sql = "./test-files/IP_Predmety_planu_VN-to-P_oprava.sql"
+        # source_sql = "./test-files/Predmety_kapacita_kdo_zmenil.sql"
+        # source_sql = "./test-files/Predmety_kapacita_prehled.sql"
+        # source_sql = "./test-files/Predmety_nezarazene_do_planu_se_studenty.sql"
+        # source_sql = "./test-files/Predmety_nezarazene_do_planu_zavrit-smazat.sql"
+        # source_sql = "./test-files/Skupiny_PV_kontrola_limitu_predmetu.sql"
+        source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"   # DORESIT
+        source_sql = "./test-files/Sskup_registrace_prubeh.sql"   # DORESIT
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2015.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_en.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_simulace.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_Studis.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2016.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Simulace.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Studis.sql"
+        source_sql = "./test-files/Stipendia_plneni_podminek_2018.sql"  # DORESIT -- "rocniky_f" pry tabulka z DB, byt jde o WITH blok!
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2018_simulace.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2018_Studis.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2019.sql"
+        # source_sql = "./test-files/Stipendia_plneni_podminek_2019_simulace.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -2356,32 +2390,42 @@ if __name__ == "__main__":
         # Kompletni zachovani velikosti pismen je zarizno pomoci metody replace_keep_case(...), kde jsou velikosti pismen v nahradnim retezci nastaveny podle velikosti pismen v puvodnim vyrazu.
         # (a) Kosmeticke upravy (zavorku v klici je nutno escapovat, jelikoz hledame pomoci regularnich vyrazu!)
         replacements = {}
+        # Nektere funkce potrebujeme bez mezery mezi nazvem a pocatecni zavorkou, coz bude vyzadovat vice ruznych nahrad (nelze resit pomoc nahrad "celych slov"). Pro usnadneni situace si budeme takove nazvy funkci ukladat do specialni kolekce a vsechny potrebne nahrady pak pridame hromadne.
+        fcns_no_space = []
+        # Podobne musi byt za nekterymi klicovymi slovy a hinty vzdy mezera
+        kws_space = []
+        hints_space = []
         # Nezlomitelne mezery nahradime standardnimi mezerami
         replacements["u\xa0"] = " "
         # Za kazdym klicovym slovem OVER potrebujeme mezeru, abychom se vyhnuli dalsi zbytecne uprave kodu pro podchyceni pripadu "OVER(". Nelze ale nahrazovat cela slova (s "word boundary" na zacatk ua konci regex retezce), takze musime pro predejiti potizim nahrazovat retezec vc. pocatecni mezery (resp. \n, \t).
-        replacements[" over\\("] = " over ("
-        replacements["\\nover\\("] = "\nover ("
-        replacements["\\tover\\("] = "\tover ("
+        kws_space.append("over")
         # Podobne vyresime hinty "use_hash" a "use_nl"
-        replacements["\\+use_hash\\("] = "+ use_hash ("
-        replacements[" use_hash\\("] = " use_hash ("
-        replacements["\\nuse_hash\\("] = "\nuse_hash ("
-        replacements["\\tuse_hash\\("] = "\tuse_hash ("
-        replacements["\\+use_nl\\("] = "+ use_nl ("
-        replacements[" use_nl\\("] = " use_nl ("
-        replacements["\\nuse_nl\\("] = "\nuse_nl ("
-        replacements["\\tuse_nl\\("] = "\tuse_nl ("
-        # COUNT(...) a NVL(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
-        replacements[" count \\("] = " count("
-        replacements["\\ncount \\("] = "\ncount("
-        replacements["\\tcount \\("] = "\tcount("
-        replacements[",count \\("] = ", count("
-        replacements["\\(count \\("] = "( count("
-        replacements[" nvl \\("] = " nvl("
-        replacements["\\nnvl \\("] = "\nnvl("
-        replacements["\\tnvl \\("] = "\tnvl("
-        replacements[",nvl \\("] = ", nvl("
-        replacements["\\(nvl \\("] = "( nvl("
+        hints_space.append("use_hash")
+        hints_space.append("use_nl")
+        # COUNT(...), NVL(...) a SUM(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
+        fcns_no_space.append("count")
+        fcns_no_space.append("nvl")
+        fcns_no_space.append("sum")
+        # Operator NOT musi byt s mezerou na obou stranach -- cast vyresime jako bezne klicove slovo, zbytek ("," nebo "(" pred NOT) doresime primo zde rucne
+        kws_space.append("not")
+        replacements[",not\\("] = ", not ("
+        replacements["\\(not\\("] = "( not ("
+        # Nyni doresime funkce, kde nesmi byt mezera mezi nazvem a pocatecni zavorkou, a klicova slova, kde naopak mezera byt musi
+        for fcn in fcns_no_space:
+            replacements[f" {fcn} \\("] = f" {fcn}("
+            replacements[f"\\n{fcn} \\("] = f"\n{fcn}("
+            replacements[f"\\t{fcn} \\("] = f"\t{fcn}("
+            replacements[f",{fcn} \\("] = f", {fcn}("
+            replacements[f"\\({fcn} \\("] = f"( {fcn}("
+        for kw in kws_space:
+            replacements[f" {kw}\\("] = f" {kw} ("
+            replacements[f"\\n{kw}\\("] = f"\n{kw} ("
+            replacements[f"\\t{kw}\\("] = f"\t{kw} ("
+        for hint in hints_space:
+            replacements[f"\\+{hint}\\("] = f"+ {hint} ("
+            replacements[f" {hint}\\("] = f" {hint} ("
+            replacements[f"\\n{hint}\\("] = f"\n{hint} ("
+            replacements[f"\\t{hint}\\("] = f"\t{hint} ("
         # Za kazdou uzaviraci zavorkou potrebujeme mezeru, abychom podchytili pripad "funkce()alias" (toto by cele bylo vraceno jako jmeno, alias by chybel)
         replacements["\\)"] = ") "
         # # Podobne, byt uz ciste z kosmetickych duvodu vzhledem k nahradam zavorek, upravime vyskyty carek.
@@ -2396,6 +2440,7 @@ if __name__ == "__main__":
         replacements["data"] = ("", True)
         replacements["result"] = ("", True)
         replacements["rownum"] = ("", True)
+        replacements["cmp"] = ("", True)
         replacements["&&"] = (":", False)  # | Zde nas zachovani malych/velkych pismen netrapi, jelikoz nahrazujeme
         replacements["&"] = (":", False)   # | pouze ampersandy (napr. "&data" --> ":RANDOMSTRINGdata")
 
