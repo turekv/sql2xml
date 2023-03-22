@@ -1525,6 +1525,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Nacteme dalsi token, skocime zpet na zacatek cyklu a budeme pokracovat ve zpracovavani MERGE
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
                 continue
+            elif t.normalized == "GRANT":
+                # Nasli jsme statement "GRANT privilege-type ON object object-name TO grantees" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
+                return
             else:
 
                 # DEBUG
@@ -1538,17 +1541,27 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
 
         elif t.ttype == sql.T.CTE and t.normalized == "WITH":
             # Jde o WITH pro definici bloku, nebo o WITH jako soucast napr. "CREATE VIEW"?
-            (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=True)
-            while next_token != None:
-                if next_token.ttype == sql.T.Keyword and next_token.normalized in ["READ", "ONLY", "CHECK", "OPTION"] or next_token.ttype == sql.T.Punctuation:
-                    i = j
-                    t = next_token
-                    (j, next_token) = s.token_next(j, skip_ws=True, skip_cm=True)
+            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            while t != None:
+                token_counter += 1
+                if token_counter == 2:
+                    comment_before = ""
+                if is_comment(t):
+                    # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
+                    comment_before = split_comment(t)[1]
+                    token_counter = 0
+                elif ((t.ttype == sql.T.Keyword
+                        and t.normalized in ["READ", "ONLY", "CHECK", "GRANT", "OPTION"])
+                        or t.ttype == sql.T.Punctuation):
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)  # t == prvni token za casti WITH
+                    break
                 else:
                     break
-            if next_token != None:
-                prev_context = context
-                context = "with"
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            prev_context = context
+            context = "with"
+            # Preskocime zpet na zacatek hlavniho cyklu (v t mame token nasledujici po casti WITH)
+            continue
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
             if context == "union-select":
                 # Spojovane SELECTy mohou byt vc. WHERE apod. a slouceni vsech atributu takovych SELECTu pod nadrazenou tabulku by nemuselo davat smysl. Pokud tedy po UNION [ALL] nasleduje SELECT (bez uvedeni v zavorkach), budou odpovidajici tokeny vraceny sqlparse postupne a tudiz musime uz zde vytvorit patricnou mezi-tabulku. Jinak receno, k situaci je nutne pristupovat podobně jako u JOIN. Je-li SELECT v zavorkach, zpracuje se dale jako samostatny statement.
@@ -1575,27 +1588,21 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 return
             elif t.normalized.startswith("CREATE"):
                 # Nasli jsme "CREATE [[OR REPLACE] [FORCE] VIEW ... ( ... ) AS SELECT ...]" -- preskocime vse az po posledni token po AS). Komentare zde preskakovat nemuzeme, protoze ten posledni pred SELECT muze byt relevantni. cast "... ( ...)" za klicovym slovem VIEW je vracena jako jeden token, coz nam znacne usnadni praci s hledanim SELECTu, ktery muze byt obalen zavorkami.
-                (j, next_token) = s.token_next(i, skip_ws=True, skip_cm=False)
-                while next_token != None:
-                    if is_comment(next_token):
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                while t != None:
+                    token_counter += 1
+                    if token_counter == 2:
+                        comment_before = ""
+                    if is_comment(t):
                         # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
-                        comment_before = split_comment(next_token)[1]
+                        comment_before = split_comment(t)[1]
                         token_counter = 0
-                    elif next_token.ttype == sql.T.Keyword and next_token.normalized == "AS":
-                        # Za klicovym slovem AS musi nutne nasledovat SELECT --> aktualizujeme index (i) a token (t) a muzeme vyskocit z cyklu a dale pokracovat standardnim zpusobem
-                        i = j
-                        t = next_token
+                    elif ((t.ttype == sql.T.DML and t.normalized == "SELECT")
+                            or isinstance(t, sql.Parenthesis)):
                         break
-                    elif ((next_token.ttype == sql.T.DML and next_token.normalized == "SELECT")
-                            or isinstance(next_token, sql.Parenthesis)):
-                        # Pri nalezeni SELECT nebo zavorky musime index nechat beze zmeny (na tokenu prilis nezalezi), jinak by v dalsim zpracovani byl SELECT (resp. zavorka) preskocen!
-                        break
-                    i = j
-                    t = next_token
-                    (j, next_token) = s.token_next(j, skip_ws=True, skip_cm=False)
-                # Dosli jsme az na konec statementu? (muze nastat jedine v pripade, ze tento neni korektni, nebo byl spatne parsovan sqlparse)
-                if next_token == None:
-                    return
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                # Preskocime zpet na zacatek hlavniho cyklu (v t mame SELECT, prip. zavorku se SELECT)
+                continue
         elif isinstance(t, sql.Where):
             # Kontext musime nastavit pro potreby pripadneho pozdejsiho odstraneni fiktivnich atributu se "spojkami" (BUG v sqlparse)
             prev_context = context
