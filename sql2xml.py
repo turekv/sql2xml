@@ -1623,6 +1623,23 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
         elif t.ttype == sql.T.DML and t.normalized == "MERGE":
             prev_context = context
             context = "merge"
+        elif t.ttype == sql.T.DML and t.normalized == "INSERT":
+            # Nasli jsme "INSERT INTO table [...]" -- preskocime nasledujici dva tokeny (pripadne komentare si ulozime)
+            num_skipped_tokens = 0
+            while t != None and num_skipped_tokens < 2:
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                token_counter += 1
+                if token_counter == 2:
+                    comment_before = ""
+                if is_comment(t):
+                    # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
+                    comment_before = split_comment(t)[1]
+                    token_counter = 0
+                else:
+                    num_skipped_tokens += 1
+            # Nacteme token nasledujici po nazvu tabulky atd. a preskocime zpet na zacatek hlavniho cyklu
+            (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+            continue
         elif t.ttype == sql.T.DDL:
             if t.normalized == "DROP":
                 # Nasli jsme "DROP [VIEW ...]" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
@@ -2404,6 +2421,18 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Volba_specializace-prehled_pro_ustavy_Apollo.sql"
         # source_sql = "./test-files/Vyuky_spatny_semestr_stud_skupiny_registrace.sql"
         source_sql = "./test-files/_Rekurze_Ansi_ukazka.sql"  # DORESIT ------------------------------------
+        # source_sql = "./test-files/Volba_oboru_BS_zarazeni_do_vyssich_rocniku.sql"
+        # source_sql = "./test-files/Zkouska_projekt_hromadne_vytvoreni.sql"
+        # source_sql = "./test-files/Zav_prace_zapocty_6B-Bak_projekt.sql"
+        # source_sql = "./test-files/Uvazky_vedeni_DS.sql"
+        # source_sql = "./test-files/Zahranicni_cesta_statistika_delek_Benchmark.sql"
+        # source_sql = "./test-files/Zahranicni_cesta_studenti_oboru.sql"
+        # source_sql = "./test-files/Uvazky_zav_prace.sql"
+        # source_sql = "./test-files/Uvazky_absolventi_DS.sql"
+        # source_sql = "./test-files/Uvazky_komise_PR.sql"
+        # source_sql = "./test-files/Uvazky_komise_SZZ.sql"
+        # source_sql = "./test-files/Predmety_ustav_zmena_PHD_reverse_logger.sql"
+        source_sql = "./test-files/.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -2451,10 +2480,12 @@ if __name__ == "__main__":
         # Podobne vyresime hinty "use_hash" a "use_nl"
         hints_space.append("use_hash")
         hints_space.append("use_nl")
-        # COUNT(...), NVL(...) a SUM(...) musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
+        # COUNT(...), NVL(...), SUM(...) atd. musi byt bez mezery, jinak neni vraceno jako funkce, ale jako samostatne klicove slovo
         fcns_no_space.append("count")
         fcns_no_space.append("nvl")
         fcns_no_space.append("sum")
+        fcns_no_space.append("max")
+        fcns_no_space.append("min")
         # Operator NOT musi byt s mezerou na obou stranach -- cast vyresime jako bezne klicove slovo, zbytek ("," nebo "(" pred NOT) doresime primo zde rucne
         kws_space.append("not")
         replacements[",not\\("] = ", not ("
@@ -2490,6 +2521,9 @@ if __name__ == "__main__":
         replacements["result"] = ("", True)
         replacements["rownum"] = ("", True)
         replacements["cmp"] = ("", True)
+        replacements["old"] = ("", True)
+        replacements["new"] = ("", True)
+        replacements["do"] = ("", True)
         replacements["&&"] = (":", False)  # | Zde nas zachovani malych/velkych pismen netrapi, jelikoz nahrazujeme
         replacements["&"] = (":", False)   # | pouze ampersandy (napr. "&data" --> ":RANDOMSTRINGdata")
 
