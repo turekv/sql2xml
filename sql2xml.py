@@ -1473,17 +1473,23 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
             comment_before = split_comment(t)[1]
             token_counter = 0
-        elif t.ttype == sql.T.Keyword and t.normalized != "NULL":
-            # Narazili jsme na klicove slovo, coz ve vetsine pripadu vyzaduje nastaveni context. Je ale nutne osetrit nekolik specialnich pripadu.
-
-            # TODO: Byl by operator "IS NOT" vracen jako jeden token, nebo jako dva tokeny?
-
-            if split_attribute != None and t.normalized in ["BETWEEN", "IN", "IS", "AND"]:
+        elif t.ttype == sql.T.Keyword and split_attribute != None:
+            if t.normalized in ["BETWEEN", "AND", "IS", "IS NOT"]:
                 if split_attribute.condition == None:
                     split_attribute.condition = t.normalized
                 else:
                     split_attribute.condition += " " + t.normalized
-            elif t.normalized == "FROM":
+            elif t.normalized in ["NULL", "NOT NULL"]:
+                # V tomto pripade vime, ze split_attribute je kompletni
+                split_attribute.condition += " " + t.normalized
+                if context == "on":
+                    join_table.conditions.append(split_attribute)
+                else:
+                    Table.get_table_by_id(last_select_table_id).conditions.append(split_attribute)
+                split_attribute = None
+        elif t.ttype == sql.T.Keyword and t.normalized != "NULL":
+            # Narazili jsme na klicove slovo, coz ve vetsine pripadu vyzaduje nastaveni context
+            if t.normalized == "FROM":
                 prev_context = context
                 context = "from"
                 # Musime jeste overit, jestli nemame ulozeny nejaky rozdeleny atribut s Literalem (tento mohl byt na konci seznamu bez aliasu, tzn. byl by docasne ve split_attribute a v tabulce by zatim chybel). V takovem pripade nastavime comment = condition = None a atribut pridame do last_select_table (== table, resp. union_table).
@@ -1535,7 +1541,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Komentar musime s ohledem na pritomnost mezer priradit primo, nikoliv pomoci set-comment(...)!
                 split_attribute.condition = Attribute.CONDITION_SPLIT_ATTRIBUTE
                 split_attribute.comment = " OVER "
-            elif (t.normalized in ["ORDER BY", "GROUP BY", "CYCLE", "SET", "TO", "DEFAULT", "USING", "WHEN", "THEN"]):
+            elif (t.normalized in ["ORDER BY", "GROUP BY", "CYCLE", "SET", "TO", "DEFAULT", "USING", "WHEN", "THEN"]
+                    or (t.normalized == "INTO" and context != "merge")):
                 # V tomto pripade se zda, ze parametry (jeden, prip. vice) jsou vzdy vraceny jako jeden token. Akt. token tedy ulozime do kolekci sql_components, join_components a union_components a nacteme dalsi token (cimz nasledujici token de facto preskocime). V SQL zdroji ale chceme zachovat veskere bile znaky...
                 sql_components.append(t.value)
                 join_components.append(t.value)
@@ -1563,15 +1570,31 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 sql_components.append(t.value)
                 join_components.append(t.value)
                 union_components.append(t.value)
-                # Ted jeste overime, zda je nasl. non-whitespace token Literal, prip. zavorka. Pokud neni, preskocime na zacatek cyklu, jinak pokracujeme na konec cyklu (ulozeni hodnoty + nacteni noveho tokenu).
+                # Podminka muze byt rozdelena klicovym slovem PRIOR --> preskocime na nasledujici non-whitespace token a ten uz pak navratem na zacatek hlavniho cyklu zpracujeme standardnim zpusobem.
                 (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
-                while t.is_whitespace:  # Zde predpokladame, ze t != None (pokud t == None, je s SQL kodem neco spatne a stejne bychom museli parsovani prerusit...)
+                while t.is_whitespace or t.normalized == "PRIOR":  # Zde predpokladame, ze t != None (pokud t == None, je s SQL kodem neco spatne a stejne bychom museli parsovani prerusit...)
                     sql_components.append(t.value)
                     join_components.append(t.value)
                     union_components.append(t.value)
                     (i, t) = s.token_next(i, skip_ws=False, skip_cm=False)
-                if not (t.ttype in sql.T.Literal or isinstance(t, sql.Parenthesis)):
-                    continue
+                continue
+            elif t.normalized == "SEARCH":
+                # Napr. "[SEARCH] [DEPTH] [FIRST] [BY] [identifier] [SET] [identifier]" --> musime preskocit na sedmy token od toho aktualniho
+                num_skipped_tokens = 0
+                while t != None and num_skipped_tokens < 6:
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    token_counter += 1
+                    if token_counter == 2:
+                        comment_before = ""
+                    if is_comment(t):
+                        # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
+                        comment_before = split_comment(t)[1]
+                        token_counter = 0
+                    else:
+                        num_skipped_tokens += 1
+                # Nacteme token nasledujici po nazvu tabulky atd. a preskocime zpet na zacatek hlavniho cyklu
+                (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                continue
             elif context == "merge" and t.normalized == "INTO":
                 # Akt. token muzeme preskocit (rovnou preskocime i bile znaky), stejne jako ten, ktery po nem nasleduje ("[MERGE] [INTO] [table AS alias] [USING] [(...) AS alias] [ON] [...] [WHEN] [MATCHED] [THEN] [UPDATE] [SET] [...]"; ulozeni stav. tokenu neni potreba)
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)  # t == [table AS alias]
@@ -1581,13 +1604,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Nacteme dalsi token, skocime zpet na zacatek cyklu a budeme pokracovat ve zpracovavani MERGE
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
                 continue
-            elif t.normalized == "GRANT":
-                # Nasli jsme statement "GRANT privilege-type ON object object-name TO grantees" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
+            elif t.normalized == "GRANT" or t.normalized == "EXCEPTION" or t.normalized == "RETURN":
+                # Nasli jsme statement "GRANT privilege-type ON object object-name TO grantees", "EXCEPTION ...", prip. "RETURN hodnota/identifier" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
                 return
             else:
 
                 # DEBUG
-                if not (t.normalized in ["DISTINCT", "GROUP", "AS"]
+                if not (t.normalized.startswith("NULLS ")  # "NULLS [FIRST|LAST]"
+                        or t.normalized in ["DISTINCT", "GROUP", "AS", "BEGIN", "END"]
                         or (context in ["on", "where"] and t.normalized in ["AND", "OR", "NOT"])):
                     w = f"\n>>> POTENCIALNE PROBLEMATICKE KLICOVE SLOVO: {t.normalized}"
                     print(w)
@@ -1606,11 +1630,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     # Pri nalezeni komentare si tento ulozime jeho druhou cast (za serii pomlcek) a resetujeme token_counter
                     comment_before = split_comment(t)[1]
                     token_counter = 0
-                elif ((t.ttype == sql.T.Keyword
-                        and t.normalized in ["READ", "ONLY", "CHECK", "GRANT", "OPTION"])
+                elif t.ttype == sql.T.Keyword and t.normalized in ["READ", "CHECK", "GRANT"]:
+                    # Zacatek "READ ONLY", prip. "[CHECK|GRANT] OPTION"
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    continue
+                elif ((t.ttype == sql.T.Keyword and t.normalized in ["ONLY", "OPTION"])
                         or t.ttype == sql.T.Punctuation):
-                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)  # t == prvni token za casti WITH
-                    break
+                    (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
+                    continue
                 else:
                     break
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
@@ -1742,7 +1769,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 attribute = attributes[j]
                 # Nejdrive zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba u hlavni tabulky aktualizovat patricny seznam bindovanych promennych
                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                    last_select_table_id.add_bind_var(attribute.comment)
+                    last_select_table.add_bind_var(attribute.comment)
                     if last_select_table_id != table.id:
                         table.add_bind_var(attribute.comment)
                     attributes.pop(j)
@@ -2337,153 +2364,21 @@ def replace_match_case(old_str, new_str, text, whole_words=True):
 
 
 if __name__ == "__main__":
-    write_debug_output = False  # Po hromadném testu vratit zpet na False --------------------------
+    write_debug_output = False
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
     if len(sys.argv) > 2:
         source_sql = str(sys.argv[1])
         encoding = str(sys.argv[2])
     else:
-        # # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
-        # print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru výše\n            (ansi, utf-8, utf-8-sig apod.)\n")
-        # os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
+        # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
+        print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, utf-8, utf-8-sig apod.)\n")
+        os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
-        write_debug_output = True
         # DEBUG
-        # source_sql = "./test-files/_subselect_v_operaci__utf8.sql"
-        # source_sql = "./test-files/EI_znamky_2F_a_3F__utf8.sql"
-        # source_sql = "./test-files/Plany_prerekvizity_kontrola__utf8.sql"
-        # source_sql = "./test-files/Predmety_aktualni_historie__utf8.sql"
-        # source_sql = "./test-files/Predmety_aktualni_historie_MOD__utf8.sql"
-        # source_sql = "./test-files/sql_parse_pokus__utf8.sql"
-        # encoding = "utf-8"
-        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace__utf8-sig.sql"
-        # source_sql = "./test-files/PHD_studenti_SDZ_SZZ_predmety_publikace_MOD__utf8-sig.sql"
-        # source_sql = "./test-files/Predmety_literatura_pouziti_v_planech_Apollo__utf8-sig.sql"
-        # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu__utf8-sig.sql"
-        # source_sql = "./test-files/Profese_Pridelene_AD_vymazat_orgunitu_MOD_WHERE_EXISTS__utf8-sig.sql"
-        # source_sql = "./test-files/Program_garant_pocet_programu_sloucenych__utf8-sig.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo__utf8-sig.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_MOD__utf8-sig.sql"
+        # write_debug_output = True
         # source_sql = "./test-files/Zav_prace_predb_zad_garanta.sql"
-        # source_sql = "./test-files/_Funkce_Table_2_Row_ListAgg.sql"
-        # source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze_test.sql"
-        # source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze.sql"
-        # source_sql = "./test-files/Absolventi_zdvojeny_titul_dve_studia_rekurze_clean.sql"
-        # source_sql = "./test-files/Ankety_Studis_01_Seznam_anket.sql"
-        # source_sql = "./test-files/Dodatek_zmena_kreditu_dle_planu.sql"
-        # source_sql = "./test-files/Dodatek_zmena_kreditu_dle_planu_predmety.sql"
-        # source_sql = "./test-files/EI_oprava_zapoctu.sql"
-        # source_sql = "./test-files/EI_zapis_hodnoceni_A2_letni_kurz.sql"
-        # source_sql = "./test-files/EI_zapis_hodnoceni_A2_letni_kurz_vyuka.sql"
-        # source_sql = "./test-files/Evidence_chybne_poradi_oprava_01_mazani.sql"
-        # source_sql = "./test-files/FIT_registrace_predmetu.sql"
-        # source_sql = "./test-files/FIT_registrace_predmetu_simulace.sql"
-        # source_sql = "./test-files/individualni_plan_fekt_func_01_orig.sql"
-        # source_sql = "./test-files/IP_Doplneni_povinnosti_v_NMS_z_BS.sql"
-        # source_sql = "./test-files/IP_jazyk_gener_NMS_oprava_spatne_nagener.sql"
-        # source_sql = "./test-files/IP_kredity_Predmety_planu_oprava_poslat02.sql"
-        # source_sql = "./test-files/IP_oprava_chybejici_navazujici_jazyky.sql"
-        # source_sql = "./test-files/IP_pocty_predmetu_rozvolneni_rozvrhy_st_abs.sql"
-        # source_sql = "./test-files/IP_predmet_skupina_osob.sql"
-        # source_sql = "./test-files/IP_predmet_skupina_osob_with.sql"
-        # source_sql = "./test-files/IP_PV_odstraneni_nadbytecnych_dle_casu_reg.sql"
-        # source_sql = "./test-files/IP_registrace_PV_malo_moc_predmetu_jina_studia.sql"
-        # source_sql = "./test-files/IP_registrace_zahranicni_stud.sql"
-        # source_sql = "./test-files/Organizace_seznam_zahr_skol_pro_eprihlasku_Erasmus.sql"
-        # source_sql = "./test-files/Person_aut_vztahy_externistum_s_dohodou.sql"
-        # source_sql = "./test-files/PHD_studenti_aktivni_vazba_na_ustav.sql"
-        # source_sql = "./test-files/Plany_perekvizity_kontrola_test.sql"
-        # source_sql = "./test-files/Predmety_klony_kopirovani_karty.sql"
-        # source_sql = "./test-files/Predmety_klony_kopirovani_karty_CVIS_3.sql"
-        # source_sql = "./test-files/Prihlaska_LA_pocet_predmetu.sql"
-        # source_sql = "./test-files/Rizeni_a_zadosti_Predmet_Zrusit.sql"
-        # source_sql = "./test-files/Rozvrh_vytizeni_studentu_predmetu.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nedostatecne_kapacity_s_skup_reg.sql"
-        # source_sql = "./test-files/Rozvrh_vyucovani_nesloucene_mistnosti_Apollo_test.sql"
-        # source_sql = "./test-files/Studenti_recyklanti_do_1.r.sql"
-        # source_sql = "./test-files/Studis_PV_volba_insert.sql"
-        # source_sql = "./test-files/Studis_PV_volba_prerekvizity_check.sql"
-        # source_sql = "./test-files/Studis_PV_volba_prerekvizity_check_debug.sql"
-        # source_sql = "./test-files/T2_Hodnoceni_studenta_predmety_03_bind.sql"
-        # source_sql = "./test-files/T2_Hodnoceni_studenta_predmety_orig.sql"
-        # source_sql = "./test-files/Temata_PHD_skolitele_pocty.sql"
-        # source_sql = "./test-files/Terminy_kolidujici_pocty_studentu_hodnoceni_prehled.sql"
-        # source_sql = "./test-files/Terminy_registrace_existuje_evidence_chybi_oprava.sql"
-        # source_sql = "./test-files/Terminy_registrace_poradi_evidence.sql"
-        # source_sql = "./test-files/Terminy_registrace_poradi.sql"
-        # source_sql = "./test-files/TMP210_profese_t1_new.sql"
-        # source_sql = "./test-files/TMP210_profese_t2_new.sql"
-        # source_sql = "./test-files/TMP216_Bind_1.sql"
-        # source_sql = "./test-files/TMP216_Bind_2.sql"
-        # source_sql = "./test-files/TMP216_Prerekvizity_bind_ukazka.sql"
-        # source_sql = "./test-files/Ucty_organizaci.sql"
-        # source_sql = "./test-files/Vizitky_mistnost_id_doplneni.sql"
-        # source_sql = "./test-files/Zav_prace_predb_zad_seznam_teacher_nezprac.sql"
-        # source_sql = "./test-files/Zav_prace_prehled_praci_souboru_Apollo.sql"
-        # source_sql = "./test-files/Zav_prace_prehled_predb_zadani_Teacher2.sql"
-        # source_sql = "./test-files/Zav_prace_prehled_predb_zadani_Teacher2b.sql"
-        # source_sql = "./test-files/Zav_prace_teacher_oponenti.sql"
-        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni.sql"
-        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_HEVA.sql"
-        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Tomecek.sql"
-        # source_sql = "./test-files/Zkouska_projekt_pocet_hodnoceni_Vasikova_uznane.sql"
-        # source_sql = "./test-files/_Bindovane_promenne_ukazka.sql"
-        # source_sql = "./test-files/_Dense_rank_cislovani_skupiny_radku.sql"
-        # source_sql = "./test-files/Promoce_registrace_FSI_view.sql"
-        # source_sql = "./test-files/V_statistika_uchazeci.sql"
-        # source_sql = "./test-files/IP_jazyk_chybi_po_zruseni.sql"
-        # source_sql = "./test-files/IP_jazyk_kontrola_pred_SZZ.sql"
-        # source_sql = "./test-files/IP_kontrola_historickych_IP.sql"
-        # source_sql = "./test-files/IP_nepretazene.sql"
-        # source_sql = "./test-files/IP_nepretazitelne.sql"
-        # source_sql = "./test-files/IP_Predmety_planu_VN-to-P_oprava.sql"
-        # source_sql = "./test-files/Predmety_kapacita_kdo_zmenil.sql"
-        # source_sql = "./test-files/Predmety_kapacita_prehled.sql"
-        # source_sql = "./test-files/Predmety_nezarazene_do_planu_se_studenty.sql"
-        # source_sql = "./test-files/Predmety_nezarazene_do_planu_zavrit-smazat.sql"
-        # source_sql = "./test-files/Skupiny_PV_kontrola_limitu_predmetu.sql"
-        # source_sql = "./test-files/Sskupina_studenti_s_jedinou_volbou.sql"
-        # source_sql = "./test-files/Sskup_registrace_prubeh.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2015.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_en.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_simulace.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2015_Studis.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2016.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Simulace.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2016_Studis.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2018.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2018_simulace.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2018_Studis.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2019.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2019_simulace.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2020_simulace.sql"
-        # source_sql = "./test-files/Stipendia_plneni_podminek_2020_test.sql"
-        # source_sql = "./test-files/Studenti_preruseni_loni.sql"
-        # source_sql = "./test-files/Terminy_registrace_vicenasobna_stejny_termin.sql"
-        # source_sql = "./test-files/U-multirank_I_09_10_11_Graduated_students.sql"
-        # source_sql = "./test-files/Volba_oboru-kontrola_automatickeho_prirazeni.sql"
-        # source_sql = "./test-files/Volba_oboru-prehled_pro_ustavy_Apollo.sql"
-        # source_sql = "./test-files/Volba_specializace-prehled_pro_ustavy_Apollo.sql"
-        # source_sql = "./test-files/Vyuky_spatny_semestr_stud_skupiny_registrace.sql"
-        source_sql = "./test-files/_Rekurze_Ansi_ukazka.sql"  # DORESIT ------------------------------------
-        # source_sql = "./test-files/Volba_oboru_BS_zarazeni_do_vyssich_rocniku.sql"
-        # source_sql = "./test-files/Zkouska_projekt_hromadne_vytvoreni.sql"
-        # source_sql = "./test-files/Zav_prace_zapocty_6B-Bak_projekt.sql"
-        # source_sql = "./test-files/Uvazky_vedeni_DS.sql"
-        # source_sql = "./test-files/Zahranicni_cesta_statistika_delek_Benchmark.sql"
-        # source_sql = "./test-files/Zahranicni_cesta_studenti_oboru.sql"
-        # source_sql = "./test-files/Uvazky_zav_prace.sql"
-        # source_sql = "./test-files/Uvazky_absolventi_DS.sql"
-        # source_sql = "./test-files/Uvazky_komise_PR.sql"
-        # source_sql = "./test-files/Uvazky_komise_SZZ.sql"
-        # source_sql = "./test-files/Predmety_ustav_zmena_PHD_reverse_logger.sql"
-        # source_sql = "./test-files/Parametrizace_nova_pohled_Harmonogram.sql"
-        # source_sql = "./test-files/PHD_NMS_absolventi_po_ustavech.sql"
-        # source_sql = "./test-files/PHD_studenti_ustav_k_datu01.sql"
-        source_sql = "./test-files/Prihlasky_uchazeci_kraj_zmeny_ke_dni.sql"
-        encoding = "utf-8-sig"
-        # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
-        # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
+        # encoding = "utf-8"
+        # encoding = "utf-8-sig"
         # encoding = "ansi"
 
     exit_code = 0
@@ -2574,6 +2469,8 @@ if __name__ == "__main__":
         replacements["old"] = ("", True)
         replacements["new"] = ("", True)
         replacements["do"] = ("", True)
+        replacements["level"] = ("", True)
+        replacements["table_name"] = ("", True)
         replacements["&&"] = (":", False)  # | Zde nas zachovani malych/velkych pismen netrapi, jelikoz nahrazujeme
         replacements["&"] = (":", False)   # | pouze ampersandy (napr. "&data" --> ":RANDOMSTRINGdata")
 
