@@ -2357,29 +2357,35 @@ def replace_match_case(old_str, new_str, text, whole_words=True):
         return text
     if new_str == None:
         new_str = ""
+    # Pro hledani celych slov potrebujeme na zacatek a konec old_str pridat metaznak \b (word boundary, je nutne escapovat zpetne lomitko!)
     if whole_words:
         old_str = "\\b" + old_str + "\\b"
-    # Pro hledani celych slov potrebujeme na zacatek a konec old_str pridat metaznak \b (word boundary, je nutne escapovat zpetne lomitko!)
     return re.sub(old_str, f_match_case, text, flags=re.I)
 
 
 if __name__ == "__main__":
     write_debug_output = False
+    overwrite_dia = False
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
-    if len(sys.argv) > 2:
+    if len(sys.argv) > 3:
+        overwrite_dia = str(sys.argv[1]).lstrip("-").lower() == "o"
+        source_sql = str(sys.argv[2])
+        encoding = str(sys.argv[3])
+    elif len(sys.argv) > 2:
         source_sql = str(sys.argv[1])
         encoding = str(sys.argv[2])
     else:
         # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
-        print("\nSyntaxe:\n\n  sql2xml SOUBOR KODOVANI\n\nkde:\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, utf-8, utf-8-sig apod.)\n")
+        print("\nSyntaxe:\n\n  sql2xml [-o] SOUBOR KODOVANI\n\nkde:\n  -o        (volitelný parametr) pokud výstupní .dia soubor\n            existuje, bude přepsán; výchozí chování (bez\n            parametru -o): název výstupního souboru\n            je upraven přidáním čísla tak, aby nedošlo\n            k přepsání existujícího souboru\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, utf-8, utf-8-sig, cp1250 apod.)\n")
         os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
         # write_debug_output = True
         # source_sql = "./test-files/Zav_prace_predb_zad_garanta.sql"
         # encoding = "utf-8"
-        # encoding = "utf-8-sig"
+        # encoding = "utf-8-sig"  # UTF-8 with BOM signature
         # encoding = "ansi"
+        # encoding = "cp1250"  # windows-1250
 
     exit_code = 0
     fTxt = None
@@ -2668,7 +2674,14 @@ if __name__ == "__main__":
         with_bind_fg_color = "2E4DE6"
         # Barva SLECTu na nejvyssi urovni (Table.MAIN_SELECT)
         ms_bg_color = "EC6964"
-        fDia = gzip.open(filename=fNamePrefix+".dia", mode="wb", compresslevel=9)
+        # Najdeme vhodne jmeno vystupniho .dia souboru (ne vzdy muze byt zadouci soubor prepsat)
+        dia_filename = fNamePrefix + ".dia"
+        if not overwrite_dia:
+            i = 0
+            while os.path.exists(dia_filename):
+                i += 1
+                dia_filename = f"{fNamePrefix}_{i}.dia"
+        fDia = gzip.open(filename=dia_filename, mode="wb", compresslevel=9)
         fDia.write(bytes(header, "UTF-8"))
         # Okraj uvazovany pri vypoctu bounding boxu (== polovina line_width v kodu nize, coz staci mit napevno)
         bb = 0.05
