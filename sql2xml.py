@@ -94,6 +94,10 @@ class Attribute:
                 return
         self.comment = comment
     
+    def comment_is_set(self) -> bool:
+        """Vraci logickou hodnotu udavajici, zda je u atributu nastaven neprazdny komentar"""
+        return self.comment != None and len(self.comment) > 0
+    
     def deep_copy(self) -> "Attribute":
         """Vraci "hlubokou" kopii atributu"""
         # Pro zrychleni operace nejprve vytvorime atribut s name == comment == None a tyto nasledne doplnime primym prirazenim (tzn. bez interniho volani metod set_name(...) a set_comment(...))
@@ -163,7 +167,7 @@ class Table:
                     alias = f" as {attr.alias}"
                 else:
                     alias = ""
-                if attr.comment != None and len(attr.comment) > 0:
+                if attr.comment_is_set():
                     # Komentar muze byt dlouhy --> v takovem pripade vypiseme pouze jeho zacatek
                     attr_comment = f"\n{indent}{indent}{indent}Komentář: \"{Table.__trim_to_length__(attr.comment)}\""
                 else:
@@ -186,7 +190,7 @@ class Table:
                     alias = f" as {attr.alias}"
                 else:
                     alias = ""
-                if attr.comment != None and len(attr.comment) > 0:
+                if attr.comment_is_set():
                     # Komentar muze byt dlouhy --> v takovem pripade vypiseme pouze jeho zacatek
                     attr_comment = f"\n{indent}{indent}{indent}Komentář: \"{Table.__trim_to_length__(attr.comment)}\""
                 else:
@@ -403,6 +407,10 @@ class Table:
             self.subcomment = None
         else:
             self.subcomment = text
+    
+    def comment_is_set(self) -> bool:
+        """Vraci logickou hodnotu udavajici, zda je u tabulky nastaven neprazdny komentar"""
+        return self.comment != None and len(self.comment) > 0
 
     @classmethod
     def __lrstrip__(cls, text: str, strip_chars: str) -> str:
@@ -740,7 +748,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
         # Token je obycejnym srovnanim, takze staci do kolekce attributes pridat navratovou hodnotu process_comparison(...) (nelze vratit primo tuto navratovou hodnotu, tzn. objekt typu Attribute, protoze typ navratove hodnoty se pozdeji poziva k rozliseni, jak presne s takovou hodnotou nalozit). Zaroven musime namisto .append() pouzit .extend(), jelikoz je vlivem dohledavani zavislosti vracen seznam atributu, nikoliv pouze jeden atribut!
         attributes.extend(process_comparison(t))
         return attributes
-    if isinstance(t, sql.Case):
+    if isinstance(t, sql.Case) or isinstance(t, sql.Operation):
         # Dohledame zavislosti (nemusime rucne po subtokenech, toto je provedeno ve volane metode)
         attributes.extend(process_identifier_list_or_function(t, only_save_dependencies=True))
         # Pridame samotnou podminku
@@ -850,7 +858,7 @@ def get_attribute_conditions(t: sql.Token) -> list:
                         comment = split_comment(last_nonws_subtoken)[0]
                 except:
                     pass
-                if len(comment) > 0 and (attributes[-1].comment == None or len(attributes[-1].comment) == 0):
+                if len(comment) > 0 and not attributes[-1].comment_is_set():
                     attributes[-1].set_comment(comment)
                 # Ted jeste dohledame pripadne zavislosti
                 dep_attr = process_identifier_list_or_function(token, only_save_dependencies=True)
@@ -1354,8 +1362,7 @@ def process_token(t, alias_table: Table, context=None, comment_before="") -> Any
                 Table.add_alias(alias_table, table.id, "".join(components))
             # Dale zkontrolujeme posledni token, zda je komentarem. Pokud je a u tabulky zaroven neni nastaveny zadny komentar z drivejska (prvni komentar byva obvykle podrobnejsi nez pripadny dalsi k teze tabulce), tento komentar ulozime.
             last_nonws_token = get_last_nonws_token(t.tokens)
-            if (is_comment(last_nonws_token)
-                    and (table.comment == None or len(table.comment) == 0)):
+            if is_comment(last_nonws_token) and not table.comment_is_set():
                 table.set_comment(last_nonws_token.value)
             # Uplne nakonec pak zpracujeme prvni subtoken (t.tokens[0]) jako samostatny statement a odkaz na vytvorenou tabulku predame parametrem
             process_statement(t.tokens[0], table)
@@ -1467,8 +1474,16 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
             comment_before = split_comment(t)[1]
             token_counter = 0
         elif t.ttype == sql.T.Keyword and t.normalized != "NULL":
-            # Narazili jsme na klicove slovo, coz ve vetsine pripadu (viz dale) vyzaduje nastaveni context
-            if t.normalized == "FROM":
+            # Narazili jsme na klicove slovo, coz ve vetsine pripadu vyzaduje nastaveni context. Je ale nutne osetrit nekolik specialnich pripadu.
+
+            # TODO: Byl by operator "IS NOT" vracen jako jeden token, nebo jako dva tokeny?
+
+            if split_attribute != None and t.normalized in ["BETWEEN", "IN", "IS", "AND"]:
+                if split_attribute.condition == None:
+                    split_attribute.condition = t.normalized
+                else:
+                    split_attribute.condition += " " + t.normalized
+            elif t.normalized == "FROM":
                 prev_context = context
                 context = "from"
                 # Musime jeste overit, jestli nemame ulozeny nejaky rozdeleny atribut s Literalem (tento mohl byt na konci seznamu bez aliasu, tzn. byl by docasne ve split_attribute a v tabulce by zatim chybel). V takovem pripade nastavime comment = condition = None a atribut pridame do last_select_table (== table, resp. union_table).
@@ -1645,7 +1660,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 # Nasli jsme "DROP [VIEW ...]" -- tohle nas vubec nezajima a muzeme tedy z metody rovnou vyskocit
                 return
             elif t.normalized.startswith("CREATE"):
-                # Nasli jsme "CREATE [[OR REPLACE] [FORCE] VIEW ... ( ... ) AS SELECT ...]" -- preskocime vse az po posledni token po AS). Komentare zde preskakovat nemuzeme, protoze ten posledni pred SELECT muze byt relevantni. cast "... ( ...)" za klicovym slovem VIEW je vracena jako jeden token, coz nam znacne usnadni praci s hledanim SELECTu, ktery muze byt obalen zavorkami.
+                # Nasli jsme "CREATE [[OR REPLACE] [FORCE] VIEW ... ( ... ) AS [SELECT | WITH] ...]" -- preskocime vse az po posledni token po AS). Komentare zde preskakovat nemuzeme, protoze ten posledni pred SELECT/WITH muze byt relevantni. cast "... ( ...)" za klicovym slovem VIEW je vracena jako jeden token, coz nam znacne usnadni praci s hledanim SELECT/WITH, ktery muze byt obalen zavorkami.
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
                 while t != None:
                     token_counter += 1
@@ -1656,40 +1671,70 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         comment_before = split_comment(t)[1]
                         token_counter = 0
                     elif ((t.ttype == sql.T.DML and t.normalized == "SELECT")
+                            or (t.ttype == sql.T.CTE and t.normalized == "WITH")
                             or isinstance(t, sql.Parenthesis)):
                         break
                     (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
-                # Preskocime zpet na zacatek hlavniho cyklu (v t mame SELECT, prip. zavorku se SELECT)
+                # Preskocime zpet na zacatek hlavniho cyklu (v t mame SELECT, WITH, prip. zavorku se SELECT)
                 continue
         elif isinstance(t, sql.Where):
             # Kontext musime nastavit pro potreby pripadneho pozdejsiho odstraneni fiktivnich atributu se "spojkami" (BUG v sqlparse)
             prev_context = context
             context = "where"
             attributes = get_attribute_conditions(t)
-            # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (obj). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
+            last_select_table = Table.get_table_by_id(last_select_table_id)
+            # BUG: Pokud parser umele rozdeli seznam atributu v SELECT apod. na vice tokenu, muze u prvniho standardniho atributu chybet komentar, ktery byl v SQL kodu uveden nad patricnym radkem. Podivame se tedy, jestli uz u aktualne resene tabulky jsou nejake standardni atributy, a pokud ano, pridame komentar k poslednimu z nich (tzn. je-li komentar prazdny, nahradime ho obsahem promenne comment_before). Pokud zadny standardni atribut zatim neexistuje, pridame komentar k prvnimu nalezenemu stadardnimu atributu v navracene kolekci (attributes). Pro urychleni budeme seznam prochazet jedine v pripade, ze comment_before != "".
             if len(comment_before) > 0:
-                attribute = Table.get_table_by_id(last_select_table_id).get_last_std_condition()
+                attribute = last_select_table.get_last_std_condition()
                 if attribute != None:
-                    if attribute.comment == None or len(attribute.comment) == 0:
+                    if not attribute.comment_is_set():
                             attribute.comment = comment_before
                 else:
                     j = 0
-                    while j < len(obj):
-                        attribute = obj[j]
+                    while j < len(attributes):
+                        attribute = attributes[j]
                         if attribute.is_standard_attribute():
-                            if attribute.comment == None or len(attribute.comment) == 0:
+                            if not attribute.comment_is_set():
                                 attribute.comment = comment_before
                             break
                         j += 1
             # Pokud jsme pri nacitani atributu nasli jako posledni sub-token komentar, jde temer jiste o komentar k nasledujicimu bloku SQL kodu. Fiktivni atribut s nesmyslnymi parametry (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_COMMENT, comment != None) nyni komentar ziskame zpet a aktualizujeme pomoci nej comment_before.
-            if len(attributes) > 0:
+            # Ve vracenem objektu mohou byt oba druhy fiktivnich atributu (CONDITION_COMMENT i CONDITION_SINGLE_ELEMENT) --> podivame se na dva posledni atributy
+            processed_attribs = 0
+            while len(attributes) > 0 and processed_attribs < 2:
+                processed_attribs += 1
                 last_attribute = attributes[-1]
                 if last_attribute.condition == Attribute.CONDITION_COMMENT:
                     # Komentar ulozime jedine v pripade, ze -- po orezani mezer pod. v konstruktoru -- neni None
-                    if last_attribute.comment != None:
+                    if last_attribute.comment_is_set():
                         comment_before = last_attribute.comment
                     else:
                         comment_before = ""
+                    attributes.pop()
+                elif last_attribute.condition == Attribute.CONDITION_SINGLE_ELEMENT:
+                    # Ke zpracovani jsme dostali jen jednu cast podminky (LHS, operator, prip. RHS)
+                    if split_attribute == None:
+                        # Zpracovavali jsme LHS (name == jmeno, comment == pripadny komentar)
+                        split_attribute = last_attribute
+                        # Resetujeme podminku, ktera uz nyni neni potreba
+                        split_attribute.condition = None
+                    elif split_attribute.condition == None:
+                        # Zpracovavali jsme operator (name == operator, comment == pripadny komentar)
+                        split_attribute.condition = last_attribute.name
+                        if last_attribute.comment_is_set():
+                            split_attribute.comment = last_attribute.comment
+                    elif split_attribute.condition == "BETWEEN":
+                        # V podmince zatim je pouze "BETWEEN", tzn. relevantni cast pouze pridame do podminky a nastavime pripadny komentar
+                        split_attribute.condition += " " + last_attribute.name
+                        if last_attribute.comment_is_set():
+                            split_attribute.comment = last_attribute.comment
+                    else:
+                        # Zpracovavali jsme RHS (name == zbytek podminky za operatorem, comment == pripadny komentar)
+                        split_attribute.condition += " " + last_attribute.name
+                        if last_attribute.comment_is_set():
+                            split_attribute.comment = last_attribute.comment
+                        last_select_table.conditions.append(split_attribute)
+                        split_attribute = None
                     attributes.pop()
             # Vznikly pri zpracovavani podminek nejake mezi-tabulky pro "EXISTS ..."? Pokud ano, stavajici tabulku musime nyni navazat na vsechny takove tabulky pomoci vracenych fiktivnich atributu (kontrolovat budeme pro rychlost pouze podle condition == Attribute.CONDITION_EXISTS_SELECT, comment == ID exists_table), ktere jsou pak vzdy jednotlive nasledovany atributem se jmennou referenci (a pripadnym komentarem) k dane mezi-tabulce.
             j = 0
@@ -1697,9 +1742,9 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 attribute = attributes[j]
                 # Nejdrive zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba u hlavni tabulky aktualizovat patricny seznam bindovanych promennych
                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
-                    if union_table != None:
-                        union_table.add_bind_var(attribute.comment)
-                    table.add_bind_var(attribute.comment)
+                    last_select_table_id.add_bind_var(attribute.comment)
+                    if last_select_table_id != table.id:
+                        table.add_bind_var(attribute.comment)
                     attributes.pop(j)
                     continue
                 if (attribute.condition == Attribute.CONDITION_DEPENDENCY
@@ -1722,8 +1767,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                     continue
                 # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
                 if attribute.condition == Attribute.CONDITION_COMMENT:
-                    if j > 0 and (attributes[j - 1].comment == None or len(attributes[j - 1].comment) == 0):
-                        attributes[j - 1].set_comment(attributes[j].comment)
+                    if j > 0 and not attributes[j - 1].comment_is_set():
+                        attributes[j - 1].set_comment(attribute.comment)
                     attributes.pop(j)
                     continue
                 # Pokud je pritomen fiktivni atribut se "spojkou" (operatorem), muze -- byt nemusi -- jit o indikator toho, ze okolni standardni (!) atributy byly vlivem chyb v sqlparse umele rozdeleny. Je-li takovy atribut uplne na konci, zatim ho nechame byt; bude doresen, prip. zahozen pri navratu k predchozimu kontextu.
@@ -1734,18 +1779,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                         and attributes[j + 1].name != None):
                     attributes[j - 1].set_name(name + attribute.comment + attributes[j + 1].name)
                     attributes[j - 1].alias = attributes[j + 1].alias
-                    if attributes[j - 1].comment == None or len(attributes[j - 1].comment) == 0:
+                    if not attributes[j - 1].comment_is_set():
                         attributes[j - 1].comment = attributes[j + 1].comment
                     attributes.pop(j)  # Odebereme fiktivni atribut se "spojkou"...
                     attributes.pop(j)  # ... a zbytek rozdeleneho atributu
                     continue
                 j += 1
             # Nyni aktualizujeme podminky v conditions a budouci zavislosti v attributes u patricne tabulky (union_table, resp. table -- dle situace)
-            if union_table != None:
-                # Aliasy z union_table (byt jde o SELECT) kopirovat nemusime, jelikoz takovy SELECT je zpracovavan bez dalsiho volani process_statement(...), cili pripadne aliasy jsou ukladany primo do table.statement_aliases
-                union_table.conditions.extend(attributes)
-            else:
-                table.conditions.extend(attributes)
+            last_select_table.conditions.extend(attributes)
         else:
             # Jakykoliv jiny token zpracujeme "obecnou" metodou process_token(...) s tim, ze parametrem predame informaci o kontextu (context) a pripadnem komentari pred tokenem (comment_before). Timto vyresime napr. i tokeny typu "select ... from ... PIVOT (...)" (typ: Function), jelikoz v miste uziti PIVOT uz je context == None, tzn. process_token(...) vrati None.
             obj = process_token(t, table, context, comment_before)
@@ -1764,14 +1805,14 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                             else:
                                 attribute = Table.get_table_by_id(last_select_table_id).get_last_std_attribute()
                             if attribute != None:
-                                if attribute.comment == None or len(attribute.comment) == 0:
+                                if not attribute.comment_is_set():
                                         attribute.comment = comment_before
                             else:
                                 j = 0
                                 while j < len(obj):
                                     attribute = obj[j]
                                     if attribute.is_standard_attribute():
-                                        if attribute.comment == None or len(attribute.comment) == 0:
+                                        if not attribute.comment_is_set():
                                             attribute.comment = comment_before
                                         break
                                     j += 1
@@ -1785,7 +1826,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 last_attribute = obj[-1]
                                 if last_attribute.condition == Attribute.CONDITION_COMMENT:
                                     # Komentar ulozime jedine v pripade, ze -- po orezani mezer pod. v konstruktoru -- neni None
-                                    if last_attribute.comment != None:
+                                    if last_attribute.comment_is_set():
 
                                         # TODO: nastavit ke split_attribute, pokud existuje?
 
@@ -1801,12 +1842,17 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     elif split_attribute.condition == None:
                                         # Zpracovavali jsme operator (name == operator, comment == pripadny komentar)
                                         split_attribute.condition = last_attribute.name
-                                        if last_attribute.comment != None and len(last_attribute.comment) > 0:
+                                        if last_attribute.comment_is_set():
+                                            split_attribute.comment = last_attribute.comment
+                                    elif split_attribute.condition == "BETWEEN":
+                                        # V podmince zatim je pouze "BETWEEN", tzn. relevantni cast pouze pridame do podminky a nastavime pripadny komentar
+                                        split_attribute.condition += " " + last_attribute.name
+                                        if last_attribute.comment_is_set():
                                             split_attribute.comment = last_attribute.comment
                                     else:
                                         # Zpracovavali jsme RHS (name == zbytek podminky za operatorem, comment == pripadny komentar)
                                         split_attribute.condition += " " + last_attribute.name
-                                        if last_attribute.comment != None and len(last_attribute.comment) > 0:
+                                        if last_attribute.comment_is_set():
                                             split_attribute.comment = last_attribute.comment
                                         join_table.conditions.append(split_attribute)
                                         split_attribute = None
@@ -1819,8 +1865,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                 # Nejprve zkontrolujeme, zda jsme pri parsovani tokenu nenasli placeholder -- pokud ano, je potreba aktualizovat seznam bindovanych promennych jak u join_table (protoze u ni jsme placeholder nasli), tak u nadrazene tabulky (table)
                                 if attribute.condition == Attribute.CONDITION_PLACEHOLDER_PRESENT:
                                     join_table.add_bind_var(attribute.comment)
-                                    if last_select_table != None:
-                                        last_select_table.add_bind_var(attribute.comment)
+                                    last_select_table.add_bind_var(attribute.comment)
                                     if last_select_table_id != table.id:
                                         table.add_bind_var(attribute.comment)
                                     obj.pop(j)
@@ -1845,7 +1890,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     continue
                                 # Narazit muzeme i na dalsi komentare k nalezenym vnorenym podminkam. Kazdy takovy ulozeny komentar odstranime z kolekce a pokud jemu predchazejici atribut zatim komentar nema, pridame ho. Jinak fiktivni atribut ignorujeme.
                                 if attribute.condition == Attribute.CONDITION_COMMENT:
-                                    if j > 0 and (obj[j - 1].comment == None or len(obj[j - 1].comment) == 0):
+                                    if j > 0 and not obj[j - 1].comment_is_set():
                                         obj[j - 1].set_comment(attribute.comment)
                                     obj.pop(j)
                                     continue
@@ -1857,7 +1902,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                         and obj[j + 1].name != None):
                                     obj[j - 1].set_name(name + attribute.comment + obj[j + 1].name)
                                     obj[j - 1].alias = obj[j + 1].alias
-                                    if obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
+                                    if not obj[j - 1].comment_is_set():
                                         obj[j - 1].comment = obj[j + 1].comment
                                     obj.pop(j)  # Odebereme fiktivni atribut se "spojkou"...
                                     obj.pop(j)  # ... a zbytek rozdeleneho atributu
@@ -1901,7 +1946,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                         and obj[j + 1].name != None):
                                     obj[j - 1].set_name(name + attribute.comment + obj[j + 1].name)
                                     obj[j - 1].alias = obj[j + 1].alias
-                                    if obj[j - 1].comment == None or len(obj[j - 1].comment) == 0:
+                                    if not obj[j - 1].comment_is_set():
                                         obj[j - 1].comment = obj[j + 1].comment
                                     obj.pop(j)  # Odebereme fiktivni atribut se "spojkou"...
                                     obj.pop(j)  # ... a zbytek rozdeleneho atributu
@@ -2001,7 +2046,7 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                                     Table.__tables__.append(src_table)
                                 else:
                                     # Komentar pridame jen v pripade, ze tento zatim neni nastaveny (prvotni komentar zpravidla byva detailnejsi a nedava smysl ho prepsat necim dost mozna kratsim/strucnejsim)
-                                    if src_table.comment == None or len(src_table.comment) == 0:
+                                    if not src_table.comment_is_set():
                                         # Komentar by asi slo vzit primo, ale pro poradek vyuzijeme set_comment(...)
                                         src_table.set_comment(src_table_info[2])
                                 Table.add_alias(table, src_table.id, src_table_info[1])
@@ -2191,7 +2236,7 @@ def process_remaining_link_attributes(attributes: list, copy_conditions=False) -
             attributes[j - 1].alias = attributes[j + 1].alias
             if copy_conditions:
                 attributes[j - 1].condition = attributes[j + 1].condition
-            if attributes[j - 1].comment == None or len(attributes[j - 1].comment) == 0:
+            if not attributes[j - 1].comment_is_set():
                 attributes[j - 1].comment = attributes[j + 1].comment
             attributes.pop(j)  # Odebereme fiktivni atribut se "spojkou"...
             attributes.pop(j)  # ... a zbytek rozdeleneho atributu
@@ -2432,7 +2477,10 @@ if __name__ == "__main__":
         # source_sql = "./test-files/Uvazky_komise_PR.sql"
         # source_sql = "./test-files/Uvazky_komise_SZZ.sql"
         # source_sql = "./test-files/Predmety_ustav_zmena_PHD_reverse_logger.sql"
-        source_sql = "./test-files/.sql"
+        # source_sql = "./test-files/Parametrizace_nova_pohled_Harmonogram.sql"
+        # source_sql = "./test-files/PHD_NMS_absolventi_po_ustavech.sql"
+        # source_sql = "./test-files/PHD_studenti_ustav_k_datu01.sql"
+        source_sql = "./test-files/Prihlasky_uchazeci_kraj_zmeny_ke_dni.sql"
         encoding = "utf-8-sig"
         # source_sql = "./test-files/Plany_prerekvizity_kontrola__ansi.sql"
         # source_sql = "./test-files/Predmety_planu_zkouska_projekt_vypisovani_vazba_err__ansi.sql"
@@ -2486,6 +2534,8 @@ if __name__ == "__main__":
         fcns_no_space.append("sum")
         fcns_no_space.append("max")
         fcns_no_space.append("min")
+        fcns_no_space.append("to_date")
+        fcns_no_space.append("to_number")
         # Operator NOT musi byt s mezerou na obou stranach -- cast vyresime jako bezne klicove slovo, zbytek ("," nebo "(" pred NOT) doresime primo zde rucne
         kws_space.append("not")
         replacements[",not\\("] = ", not ("
