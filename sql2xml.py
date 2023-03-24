@@ -2368,7 +2368,9 @@ if __name__ == "__main__":
     overwrite_dia = False
     # Z parametru nacteme nazev souboru se SQL kodem a pozadovane kodovani (prvni parametr obsahuje nazev skriptu)
     if len(sys.argv) > 3:
-        overwrite_dia = str(sys.argv[1]).lstrip("-").lower() == "o"
+        options = str(sys.argv[1]).lstrip("-").lower()
+        write_debug_output = "d" in options
+        overwrite_dia = "o" in options
         source_sql = str(sys.argv[2])
         encoding = str(sys.argv[3])
     elif len(sys.argv) > 2:
@@ -2376,7 +2378,7 @@ if __name__ == "__main__":
         encoding = str(sys.argv[2])
     else:
         # Pokud bylo zadano malo parametru, zobrazime napovedu a ukoncime provadeni skriptu
-        print("\nSyntaxe:\n\n  sql2xml [-o] SOUBOR KODOVANI\n\nkde:\n  -o        (volitelný parametr) pokud výstupní .dia soubor\n            existuje, bude přepsán; výchozí chování (bez\n            parametru -o): název výstupního souboru\n            je upraven přidáním čísla tak, aby nedošlo\n            k přepsání existujícího souboru\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, utf-8, utf-8-sig, cp1250 apod.)\n")
+        print("\nSyntaxe:\n\n  sql2xml [-PREP] SOUBOR KODOVANI\n\nkde:\n  -PREP     volitelné přepínače; zadávány hromadně za pomlčkou\n            (např. -do)\n    d       kromě diagramu (.dia) zapíše na disk také ladicí\n            výstupy, tzn. textovou reprezentaci všech nalezených\n            tabulek (*_vystup.txt) a případné soubory s popisem\n            chyb (*_CHYBA.txt) a varování (*_VAROVANI.txt)\n    o       pokud výstupní .dia soubor existuje, bude přepsán;\n            výchozí chování (bez parametru -o): název výstupního\n            souboru je upraven přidáním čísla tak, aby nedošlo\n            k přepsání existujícího souboru\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, cp1250, utf-8, utf-8-sig apod.)\n")
         os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
         # DEBUG
