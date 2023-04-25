@@ -1643,6 +1643,8 @@ def process_statement(s, table=None, known_attribute_aliases=False) -> None:
                 (i, t) = s.token_next(i, skip_ws=True, skip_cm=False)
             prev_context = context
             context = "with"
+            # Jsme na zacatku casti WITH, ale zatim jsme nenacetli ani jeden blok --> zakazeme navrat k puvodnimu kontextu, cimz se zaroven zabrani predcasnemu resetu promenne comment_before
+            can_switch_to_prev_context = False
             # Preskocime zpet na zacatek hlavniho cyklu (v t mame token nasledujici po casti WITH)
             continue
         elif t.ttype == sql.T.DML and t.normalized == "SELECT":
@@ -2281,7 +2283,7 @@ def text_to_dia(text: str) -> str:
     """Vrati text ve tvaru vhodnem pro vlozeni do .dia"""
     if text != None and len(text) > 0:
         # Pocatecni a koncove bile znaky orezeme
-        return text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return ""
 
 
@@ -2381,13 +2383,13 @@ if __name__ == "__main__":
         print("\nSyntaxe:\n\n  sql2xml [-PREP] SOUBOR KODOVANI\n\nkde:\n  -PREP     volitelné přepínače; zadávány hromadně za pomlčkou\n            (např. -do)\n    d       kromě diagramu (.dia) zapíše na disk také ladicí\n            výstupy, tzn. textovou reprezentaci všech nalezených\n            tabulek (*_vystup.txt) a případné soubory s popisem\n            chyb (*_CHYBA.txt) a varování (*_VAROVANI.txt)\n    o       pokud výstupní .dia soubor existuje, bude přepsán;\n            výchozí chování (bez parametru -o): název výstupního\n            souboru je upraven přidáním čísla tak, aby nedošlo\n            k přepsání existujícího souboru\n  SOUBOR    cesta k souboru s SQL dotazem\n  KODOVANI  kódování, které má být použito při čtení souboru\n            (ansi, cp1250, utf-8, utf-8-sig apod.)\n")
         os._exit(1)  # sys.exit(1) vyvola dalsi vyjimku (SystemExit)!
 
-        # DEBUG
+        # # DEBUG
         # write_debug_output = True
-        # source_sql = "./test-files/Zav_prace_predb_zad_garanta.sql"
-        # encoding = "utf-8"
+        # source_sql = "./test-files/Ankety_Podil_odpovedi_po_programech.sql"
+        # # encoding = "utf-8"
         # encoding = "utf-8-sig"  # UTF-8 with BOM signature
-        # encoding = "ansi"
-        # encoding = "cp1250"  # windows-1250
+        # # encoding = "ansi"
+        # # encoding = "cp1250"  # windows-1250
 
     exit_code = 0
     fTxt = None
@@ -2688,7 +2690,7 @@ if __name__ == "__main__":
         # Okraj uvazovany pri vypoctu bounding boxu (== polovina line_width v kodu nize, coz staci mit napevno)
         bb = 0.05
         # Bloky budeme rozmistovat do matice s max. poctem bloku na jednom "radku" n_blocks_h, pricemz bloky nejvice vlevo budou na horiz. pozici x0
-        n_blocks_h = 10
+        n_blocks_h = 6
         x0 = bb
         # Pozice nasledujiciho bloku
         x = x0
