@@ -1,0 +1,223 @@
+TABULKA w_mla (ID 0)
+    Všechny známé aliasy:
+        mla1
+        mla2
+    Sloupce:
+        mla.zkr as zkratka
+        mla.nazev
+        mla.p_id
+            Komentář: "ID predmetu"
+        v.ak_rok
+        v.hodn_vyuky
+            Komentář: "Celkove hodnoceni vyuky predmetu v danem ak. roce"
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        select-0 (ID 1)
+        join-0 (ID 4)
+    Komentář:
+        "Predmety MLA1 a MLA2 s hodnocenim vyuky v ak.[...]"
+    Podkomentář:
+        "Pozor: vyuziva bindovane promenne!"
+    SQL kód:
+        "SELECT mla.zkr AS zkratka, mla.nazev, mla.p_i[...]"
+
+TABULKA select-0 (ID 1)
+    Všechny známé aliasy:
+        mla
+    Sloupce:
+        *
+    Podmínky (bez uvažování log. spojek):
+        predmet.zkr IN ('MLA1', 'MLA2')
+            Komentář: "Jen predmety MLA1 a MLA2"
+    Vazba na tabulky:
+        vyuka.predmet (ID 2)
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        "SELECT * FROM vyuka.predmet WHERE predmet.zkr[...]"
+
+TABULKA vyuka.predmet (ID 2)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        ""
+
+TABULKA vyuka.vyucovani (ID 3)
+    Všechny známé aliasy:
+        v
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-0 (ID 4)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        v.p_id = mla.p_id
+        v.ak_rok BETWEEN :ROK_OD AND :ROK_DO
+            Komentář: "Jen s exist. hodnocenim vyuky v ak. letech RO[...]"
+    Vazba na tabulky:
+        vyuka.vyucovani (ID 3)
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        "INNER JOIN vyuka.vyucovani v ON ( v.p_id = ml[...]"
+
+TABULKA w_zn (ID 5)
+    Všechny známé aliasy:
+        zn
+    Sloupce:
+        mla1.ak_rok
+        mla1.zkr as zkr1
+        h1.zn_ects as znamka1
+            Komentář: "ECTS hodnoceni (A--F)"
+        mla2.zkr as zkr2
+        h2.zn_ects as znamka2
+            Komentář: "ECTS hodnoceni (A--F)"
+        h1.s_id
+            Komentář: "ID studenta"
+        DECODE(h1.zn_ects, 'F', 0, NULL, 0, 1) as mla1_lepsi_nez_f
+        mla1.hodn_vyuky as celk_hodn_vyuky_mla1
+        DECODE(h2.zn_ects, 'F', 0, NULL, 0, 1) as mla2_lepsi_nez_f
+        mla2.hodn_vyuky as celk_hodn_vyuky_mla2
+        DECODE(h1.zn_ects, 'F', 0, NULL, 0, 1) * DECO[...] as oba_lepsi_nez_f
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        w_mla (ID 0)
+        join-1 (ID 7)
+        join-2 (ID 8)
+        join-3 (ID 9)
+    Komentář:
+        "Hodnoceni studentu"
+    Podkomentář:
+        ""
+    SQL kód:
+        "SELECT mla1.ak_rok, mla1.zkr AS zkr1, h1.zn_e[...]"
+
+TABULKA student.hodnoceni (ID 6)
+    Všechny známé aliasy:
+        h1
+        h2
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        <žádné>
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        ""
+
+TABULKA join-1 (ID 7)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        h1.p_id = mla1.p_id
+        h1.ak_rok = mla1.ak_rok
+        mla1.zkr = 'MLA1'
+            Komentář: "Hodnoceni studenta v kurzu MLA1"
+    Vazba na tabulky:
+        student.hodnoceni (ID 6)
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        "INNER JOIN student.hodnoceni h1 ON ( h1.p_id [...]"
+
+TABULKA join-2 (ID 8)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        mla2.zkr = 'MLA2'
+        mla2.ak_rok = mla1.ak_rok
+            Komentář: "MLA1 i MLA2 ve stejnem ak. roce"
+    Vazba na tabulky:
+        w_mla (ID 0)
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        "INNER JOIN w_mla mla2 ON ( mla2.zkr = 'MLA2' [...]"
+
+TABULKA join-3 (ID 9)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        <žádné>
+    Podmínky (bez uvažování log. spojek):
+        h2.p_id = mla2.p_id
+        h2.ak_rok = mla2.ak_rok
+        h2.s_id = h1.s_id
+            Komentář: "Tentyz student, hodnoceni v MLA2"
+    Vazba na tabulky:
+        student.hodnoceni (ID 6)
+    Komentář:
+        ""
+    Podkomentář:
+        ""
+    SQL kód:
+        "INNER JOIN student.hodnoceni h2 ON ( h2.p_id [...]"
+
+TABULKA main-select-0 (ID 10)
+    Všechny známé aliasy:
+        <žádné>
+    Sloupce:
+        zn.ak_rok as rok
+        COUNT(1) as celkem_studentu
+        SUM(zn.mla1_lepsi_nez_f) as mla1_lepsi_nez_f
+        zn.celk_hodn_vyuky_mla1
+        SUM(zn.mla2_lepsi_nez_f) as mla2_lepsi_nez_f
+        zn.celk_hodn_vyuky_mla2
+        SUM(zn.oba_lepsi_nez_f) as oba_lepsi_nez_f
+    Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Vazba na tabulky:
+        w_zn (ID 5)
+    Komentář:
+        "Hlavni tabulka"
+    Podkomentář:
+        ""
+    SQL kód:
+        "SELECT zn.ak_rok AS rok, COUNT(1) celkem_stud[...]"
+
+
+Tento SQL dotaz používá následující tabulky z DB:
+    * student.hodnoceni
+    * vyuka.predmet
+    * vyuka.vyucovani
