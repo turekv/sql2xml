@@ -104,7 +104,7 @@ který je uložen v souboru [query.sql](sample/query.sql) (použité kódování
     cd sample
     python ..\sql2xml.py -d query.sql utf-8
 
-_Pozn.:_ V *nixových operačních systémech bychom vzhledem k obvyklé přítomnosti Pythonu ve verzích 2 i 3 volali skript typicky takto: `python3 ../sql2xml.py -d query.sql utf-8`.
+_Pozn.:_ Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v *nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 ../sql2xml.py -d query.sql utf-8`.
 
 Po dokončení zpracovávání SQL dotazu skript vypíše do konzoly seznam referencovaných databázových tabulek; v tomto případě:
 
