@@ -99,7 +99,7 @@ Uvažujme SQL dotaz ve tvaru
     ORDER BY zn.ak_rok ASC
     GROUP BY zn.ak_rok
 
-který je uložen v souboru [query.sql](sample/query.sql) (použité kódování: UTF-8). Tento v části `WITH` obsahuje dva bloky (`w-mla` a `w_zn`), které pak jsou využity v další části kódu. Řekněme, že nás nezajímá jen diagram, ale z nějakého důvodu chceme mít k dispozici i seznam všech ostatních "mezitabulek", které se vyskytují patřičném v SQL dotazu. Skript proto budeme volat s přepínačem `-d`. S ohledem na použité kódování předáme v parametru `KODOVANI` hodnotu `utf-8`. Pro získání diagramu a doprovodných textových souborů proto ve Windows použijeme tuto sekvenci příkazů:
+který je uložen v souboru [query.sql](sample/query.sql) (použité kódování: UTF-8). Tento v části `WITH` obsahuje dva bloky (`w-mla` a `w_zn`), které pak jsou postupně využívány v následujících částech kódu. Řekněme, že nás nezajímá jen diagram, ale z nějakého důvodu chceme mít k dispozici i seznam všech ostatních "mezitabulek", které se vyskytují patřičném v SQL dotazu. Skript proto budeme volat s přepínačem `-d`. S ohledem na použité kódování předáme v parametru `KODOVANI` hodnotu `utf-8`. Pro získání diagramu a doprovodných textových souborů proto ve Windows použijeme tuto sekvenci příkazů:
 
     cd sample
     python ..\sql2xml.py -d query.sql utf-8
@@ -118,9 +118,9 @@ Nyní tedy máme ve složce s SQL dotazem dva nové soubory:
 * _query.dia_ (vytvořený diagram) a
 * _query\_vystup.txt_ (seznam všech tabulek, které se v dotazu vyskytují).
 
-Jelikož zpracování SQL dotazu proběhlo bez jakýchkoli chyb či varování, nebyl skriptem vytvořen soubor _query\_CHYBA.txt_ ani _query\_VAROVANI.txt_.
+(Jelikož zpracování SQL dotazu proběhlo bez jakýchkoli chyb či varování, nebyl skriptem vytvořen soubor _query\_CHYBA.txt_ ani _query\_VAROVANI.txt_.)
 
-Vytvořený diagram si nyní otevřeme v aplikaci [Dia](https://wiki.gnome.org/Apps/Dia). Na první pohled je vidět, že bloky jsou uspořádány sice pravidelně, nicméně jinak, než bychom chtěli. Stejně tak spojnice bloků začínají a končí na poněkud zvláštních místech (toto je dáno skutečností, že Dia po otevření souboru přizpůsobí šířky bloků obsaženým textům):
+Vytvořený diagram si otevřeme v aplikaci [Dia](https://wiki.gnome.org/Apps/Dia). Na první pohled je vidět, že bloky jsou uspořádány sice zčásti pravidelně, nicméně jinak, než bychom asi chtěli. Stejně tak spojnice bloků začínají a končí na poněkud zvláštních místech (toto je dáno skutečností, že Dia po otevření souboru přizpůsobí šířky bloků obsaženým textům):
 
 ![](sample/query-raw.png)
 
@@ -235,7 +235,7 @@ Pro každou nalezenou tabulku tedy máme k dispozici:
 * sloupce, které u ní jsou explicitně uvedené v SQL kódu, a to vč. případných komentářů k nim,
 * podmínky (je-li přítomna část `WHERE`, příp. jde-li o tabulku reprezentující `JOIN`) v "atomárním tvaru", tzn. bez uvažování logických spojek, seskupení podmínek do skupin pomocí závorek apod.,
 * seznam tabulek, které tato tabulka referencuje (= ze kterých přebírá data),
-* úvodní části případného hlavního komentáře a podkomentář (celé znění je vždy uvedeno ve vlastnostech dané tabulky – bloku – v diagramu) a
+* úvodní části případného hlavního komentáře a podkomentáře (celé znění je vždy uvedeno ve vlastnostech dané tabulky – bloku – v diagramu) a
 * úvodní část jejího SQL kódu (celé znění je opět dostupné ve vlastnostech bloku v diagramu).
 
 Explicitně nepojmenovaným tabulkám jsou skriptem generovány sekvenčně číslované názvy (`select-0`, `select-1`, ..., `main-select-0`, `main-select-1`, ..., `exists-select-0`, `exists-select-1`, ..., `union-select-0`, `union-select-1`, ..., `join-0`, `join-1`, ...).
