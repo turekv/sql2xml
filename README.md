@@ -99,7 +99,7 @@ Uvažujme SQL dotaz ve tvaru
     ORDER BY zn.ak_rok ASC
     GROUP BY zn.ak_rok
 
-který je uložen v souboru [query.sql](sample/query.sql) (použité kódování: UTF-8). Tento v části `WITH` obsahuje XXX bloků, které pak jsou využity v hlavním `SELECT`u. Řekněme, že nás nezajímá jen diagram, ale z nějakého důvodu chceme mít k dispozici i seznam všech ostatních "mezitabulek", které se vyskytují patřičném v SQL dotazu. Skript proto budeme volat s přepínačem `-d`. S ohledem na použité kódování předáme v parametru `KODOVANI` hodnotu `utf-8`. Pro získání diagramu a doprovodných textových souborů proto ve Windows použijeme tuto sekvenci příkazů:
+který je uložen v souboru [query.sql](sample/query.sql) (použité kódování: UTF-8). Tento v části `WITH` obsahuje dva bloky (`w-mla` a `w_zn`), které pak jsou využity v další části kódu. Řekněme, že nás nezajímá jen diagram, ale z nějakého důvodu chceme mít k dispozici i seznam všech ostatních "mezitabulek", které se vyskytují patřičném v SQL dotazu. Skript proto budeme volat s přepínačem `-d`. S ohledem na použité kódování předáme v parametru `KODOVANI` hodnotu `utf-8`. Pro získání diagramu a doprovodných textových souborů proto ve Windows použijeme tuto sekvenci příkazů:
 
     cd sample
     python ..\sql2xml.py -d query.sql utf-8
