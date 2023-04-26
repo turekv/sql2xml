@@ -1,6 +1,6 @@
 # sql2xml
 
-Skript ze zadaného SQL dotazu generuje zjednodušený diagram  bloků z části `WITH`, a to vč. jejich vzájemných závislostí, odpovídajících komentářů uvedených v SQL dotazu, používaných aliasů a bindovaných proměnných atd.
+Skript, který ze zadaného SQL dotazu generuje zjednodušený diagram  bloků z části `WITH`, a to vč. jejich vzájemných závislostí, odpovídajících komentářů uvedených v SQL dotazu, používaných aliasů a bindovaných proměnných atd.
 
 ## Použití
 
