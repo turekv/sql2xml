@@ -18,6 +18,8 @@ Par.|Význam
 
 Výsledný diagram je zapsán ve formátu používaném aplikací [Dia](https://wiki.gnome.org/Apps/Dia). Případný soubor s popisem chyb (_*\_CHYBA.txt_) obsahuje standardní výstup metody `traceback.format_exc()`; soubor s varováními (_*\_VAROVANI.txt_) potom skriptem generované zprávy v případě, je tento např. narazí na klíčové slovo, které v daném kontextu neumí zpracovat.
 
+Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v *nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 [-PREP] SOUBOR KODOVANI`.
+
 ## Příklad
 
 _Pozn.:_ Veškeré níže zmíněné soubory a obrázky jsou k dispozici ve složce _sample_.
@@ -103,8 +105,6 @@ který je uložen v souboru [query.sql](sample/query.sql) (použité kódování
 
     cd sample
     python ..\sql2xml.py -d query.sql utf-8
-
-_Pozn.:_ Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v *nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 ../sql2xml.py -d query.sql utf-8`.
 
 Po dokončení zpracovávání SQL dotazu skript vypíše do konzoly seznam referencovaných databázových tabulek; v tomto případě:
 
