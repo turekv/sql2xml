@@ -1,6 +1,6 @@
 # sql2xml
 
-Skript, který ze zadaného SQL dotazu generuje zjednodušený diagram  bloků z části `WITH`, a to vč. jejich vzájemných závislostí, odpovídajících komentářů uvedených v SQL dotazu, používaných aliasů a bindovaných proměnných atd.
+Skript, který ze zadaného SQL dotazu generuje zjednodušený diagram bloků z části `WITH`, a to vč. jejich vzájemných závislostí, odpovídajících komentářů uvedených v SQL dotazu, používaných aliasů a bindovaných proměnných atd.
 
 ## Použití
 
@@ -17,6 +17,8 @@ Par.|Význam
 `KODOVANI` | kódování, které má být použito při čtení souboru (`ansi`, `cp1250`, `utf-8`, `utf-8-sig` apod.)
 
 Výsledný diagram je zapsán ve formátu používaném aplikací [Dia](https://wiki.gnome.org/Apps/Dia). Případný soubor s popisem chyb (_*\_CHYBA.txt_) obsahuje standardní výstup metody `traceback.format_exc()`; soubor s varováními (_*\_VAROVANI.txt_) potom skriptem generované zprávy v případě, je tento např. narazí na klíčové slovo, které v daném kontextu neumí zpracovat.
+
+Je-li v souboru `SOUBOR` více SQL příkazů oddělených středníky, budou do diagramu uloženy bloky ze všech těchto příkazů. Pro správnou funkčnost skriptu však musí mít veškeré bloky unikátní názvy.
 
 Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v *nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 [-PREP] SOUBOR KODOVANI`.
 
@@ -150,6 +152,9 @@ Soubor _query\_vystup.txt_ (přesněji jeho začátek) s dodatečnými informace
                 Komentář: "Celkove hodnoceni vyuky predmetu v danem ak. roce"
         Podmínky (bez uvažování log. spojek):
             <žádné>
+        Použité bindované proměnné:
+            ROK_DO
+            ROK_OD
         Vazba na tabulky:
             select-0 (ID 1)
             join-0 (ID 4)
@@ -168,6 +173,8 @@ Soubor _query\_vystup.txt_ (přesněji jeho začátek) s dodatečnými informace
         Podmínky (bez uvažování log. spojek):
             predmet.zkr IN ('MLA1', 'MLA2')
                 Komentář: "Jen predmety MLA1 a MLA2"
+        Použité bindované proměnné:
+            <žádné>
         Vazba na tabulky:
             vyuka.predmet (ID 2)
         Komentář:
@@ -184,6 +191,8 @@ Soubor _query\_vystup.txt_ (přesněji jeho začátek) s dodatečnými informace
             <žádné>
         Podmínky (bez uvažování log. spojek):
             <žádné>
+        Použité bindované proměnné:
+            <žádné>
         Vazba na tabulky:
             <žádné>
         Komentář:
@@ -199,6 +208,8 @@ Soubor _query\_vystup.txt_ (přesněji jeho začátek) s dodatečnými informace
         Sloupce:
             <žádné>
         Podmínky (bez uvažování log. spojek):
+            <žádné>
+        Použité bindované proměnné:
             <žádné>
         Vazba na tabulky:
             <žádné>
@@ -218,6 +229,9 @@ Soubor _query\_vystup.txt_ (přesněji jeho začátek) s dodatečnými informace
             v.p_id = mla.p_id
             v.ak_rok BETWEEN :ROK_OD AND :ROK_DO
                 Komentář: "Jen s exist. hodnocenim vyuky v ak. letech RO[...]"
+        Použité bindované proměnné:
+            ROK_DO
+            ROK_OD
         Vazba na tabulky:
             vyuka.vyucovani (ID 3)
         Komentář:
@@ -234,6 +248,7 @@ Pro každou nalezenou tabulku tedy máme k dispozici:
 * její název a přiřazené aliasy,
 * sloupce, které u ní jsou explicitně uvedené v SQL kódu, a to vč. případných komentářů k nim,
 * podmínky (je-li přítomna část `WHERE`, příp. jde-li o tabulku reprezentující `JOIN`) v "atomárním tvaru", tzn. bez uvažování logických spojek, seskupení podmínek do skupin pomocí závorek apod.,
+* použité bindované proměnné (vč. těch z podřazených částí `JOIN`, `UNION SELECT` apod., které musí být vyhodnoceny před vyhodnocením aktuální tabulky),
 * seznam tabulek, které tato tabulka referencuje (= ze kterých přebírá data),
 * úvodní části případného hlavního komentáře a podkomentáře (celé znění je vždy uvedeno ve vlastnostech dané tabulky – bloku – v diagramu) a
 * úvodní část jejího SQL kódu (celé znění je opět dostupné ve vlastnostech bloku v diagramu).

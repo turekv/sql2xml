@@ -12,6 +12,9 @@ TABULKA w_mla (ID 0)
             Komentář: "Celkove hodnoceni vyuky predmetu v danem ak. roce"
     Podmínky (bez uvažování log. spojek):
         <žádné>
+    Použité bindované proměnné:
+        ROK_DO
+        ROK_OD
     Vazba na tabulky:
         select-0 (ID 1)
         join-0 (ID 4)
@@ -30,6 +33,8 @@ TABULKA select-0 (ID 1)
     Podmínky (bez uvažování log. spojek):
         predmet.zkr IN ('MLA1', 'MLA2')
             Komentář: "Jen predmety MLA1 a MLA2"
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         vyuka.predmet (ID 2)
     Komentář:
@@ -46,6 +51,8 @@ TABULKA vyuka.predmet (ID 2)
         <žádné>
     Podmínky (bez uvažování log. spojek):
         <žádné>
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         <žádné>
     Komentář:
@@ -61,6 +68,8 @@ TABULKA vyuka.vyucovani (ID 3)
     Sloupce:
         <žádné>
     Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Použité bindované proměnné:
         <žádné>
     Vazba na tabulky:
         <žádné>
@@ -80,6 +89,9 @@ TABULKA join-0 (ID 4)
         v.p_id = mla.p_id
         v.ak_rok BETWEEN :ROK_OD AND :ROK_DO
             Komentář: "Jen s exist. hodnocenim vyuky v ak. letech RO[...]"
+    Použité bindované proměnné:
+        ROK_DO
+        ROK_OD
     Vazba na tabulky:
         vyuka.vyucovani (ID 3)
     Komentář:
@@ -109,6 +121,8 @@ TABULKA w_zn (ID 5)
         DECODE(h1.zn_ects, 'F', 0, NULL, 0, 1) * DECO[...] as oba_lepsi_nez_f
     Podmínky (bez uvažování log. spojek):
         <žádné>
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         w_mla (ID 0)
         join-1 (ID 7)
@@ -129,6 +143,8 @@ TABULKA student.hodnoceni (ID 6)
         <žádné>
     Podmínky (bez uvažování log. spojek):
         <žádné>
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         <žádné>
     Komentář:
@@ -148,6 +164,8 @@ TABULKA join-1 (ID 7)
         h1.ak_rok = mla1.ak_rok
         mla1.zkr = 'MLA1'
             Komentář: "Hodnoceni studenta v kurzu MLA1"
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         student.hodnoceni (ID 6)
     Komentář:
@@ -166,6 +184,8 @@ TABULKA join-2 (ID 8)
         mla2.zkr = 'MLA2'
         mla2.ak_rok = mla1.ak_rok
             Komentář: "MLA1 i MLA2 ve stejnem ak. roce"
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         w_mla (ID 0)
     Komentář:
@@ -185,6 +205,8 @@ TABULKA join-3 (ID 9)
         h2.ak_rok = mla2.ak_rok
         h2.s_id = h1.s_id
             Komentář: "Tentyz student, hodnoceni v MLA2"
+    Použité bindované proměnné:
+        <žádné>
     Vazba na tabulky:
         student.hodnoceni (ID 6)
     Komentář:
@@ -206,6 +228,8 @@ TABULKA main-select-0 (ID 10)
         zn.celk_hodn_vyuky_mla2
         SUM(zn.oba_lepsi_nez_f) as oba_lepsi_nez_f
     Podmínky (bez uvažování log. spojek):
+        <žádné>
+    Použité bindované proměnné:
         <žádné>
     Vazba na tabulky:
         w_zn (ID 5)

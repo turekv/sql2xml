@@ -201,6 +201,11 @@ class Table:
             conditions = f"\n{indent}{indent}".join(attribute_collection)
         else:
             conditions = "<žádné>"
+        if self.uses_bind_vars():
+            self.used_bind_vars.sort()
+            bind_vars = f"\n{indent}{indent}".join(self.used_bind_vars)
+        else:
+            bind_vars = "<žádné>"
         # Analogicky budeme postupovat u seznamu navazanych tabulek (chceme je mit serazene abecedne podle jmen)
         if len(self.linked_to_tables_id) > 0:
             name_collection = []
@@ -215,7 +220,7 @@ class Table:
         comment = Table.__trim_to_length__(self.comment)
         subcomment = Table.__trim_to_length__(self.subcomment)
         source_sql = Table.__trim_to_length__(self.source_sql)
-        return f"TABULKA {self.name} (ID {self.id})\n{indent}Všechny známé aliasy:\n{indent}{indent}{aliases}\n{indent}Sloupce:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}Podkomentář:\n{indent}{indent}\"{subcomment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
+        return f"TABULKA {self.name} (ID {self.id})\n{indent}Všechny známé aliasy:\n{indent}{indent}{aliases}\n{indent}Sloupce:\n{indent}{indent}{attributes}\n{indent}Podmínky (bez uvažování log. spojek):\n{indent}{indent}{conditions}\n{indent}Použité bindované proměnné:\n{indent}{indent}{bind_vars}\n{indent}Vazba na tabulky:\n{indent}{indent}{names}\n{indent}Komentář:\n{indent}{indent}\"{comment}\"\n{indent}Podkomentář:\n{indent}{indent}\"{subcomment}\"\n{indent}SQL kód:\n{indent}{indent}\"{source_sql}\""
 
     @classmethod
     def get_all_known_aliases(cls, table_id: int) -> list:
