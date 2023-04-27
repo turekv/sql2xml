@@ -16,11 +16,11 @@ Par.|Význam
 `SOUBOR` | cesta k souboru s SQL dotazem
 `KODOVANI` | kódování, které má být použito při čtení souboru (`ansi`, `cp1250`, `utf-8`, `utf-8-sig` apod.)
 
-Výsledný diagram je zapsán ve formátu používaném aplikací [Dia](https://wiki.gnome.org/Apps/Dia). Případný soubor s popisem chyb (_*\_CHYBA.txt_) obsahuje standardní výstup metody `traceback.format_exc()`; soubor s varováními (_*\_VAROVANI.txt_) potom skriptem generované zprávy v případě, je tento např. narazí na klíčové slovo, které v daném kontextu neumí zpracovat.
+Výsledný diagram je zapsán ve formátu používaném aplikací [Dia](https://wiki.gnome.org/Apps/Dia). Případný soubor s popisem chyb (_*\_CHYBA.txt_) obsahuje standardní výstup metody `traceback.format_exc()`; soubor s varováními (_*\_VAROVANI.txt_) potom skriptem generované zprávy v případě, že tento např. narazí na klíčové slovo, které v daném kontextu neumí zpracovat.
 
 Je-li v souboru `SOUBOR` více SQL příkazů oddělených středníky, budou do diagramu uloženy bloky ze všech těchto příkazů. Pro správnou funkčnost skriptu však musí mít veškeré bloky unikátní názvy.
 
-Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v *nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 [-PREP] SOUBOR KODOVANI`.
+Skript vyžaduje Python v.3. Toto je pro potřeby typické instalace Pythonu v \*nixových operačních systémech ošetřeno prvním řádkem ve tvaru `#!/usr/bin/python3`. Pokud se však soubor `python3` nachází v jiném umístění (resp. v `/usr/bin` není patřičný symbolický odkaz), může být nutné volat skript s explicitním uvedení verze Pythonu, tedy `python3 [-PREP] SOUBOR KODOVANI`.
 
 ## Příklad
 
@@ -253,6 +253,6 @@ Pro každou nalezenou tabulku tedy máme k dispozici:
 * úvodní části případného hlavního komentáře a podkomentáře (celé znění je vždy uvedeno ve vlastnostech dané tabulky – bloku – v diagramu) a
 * úvodní část jejího SQL kódu (celé znění je opět dostupné ve vlastnostech bloku v diagramu).
 
-Explicitně nepojmenovaným tabulkám jsou skriptem generovány sekvenčně číslované názvy (`select-0`, `select-1`, ..., `main-select-0`, `main-select-1`, ..., `exists-select-0`, `exists-select-1`, ..., `union-select-0`, `union-select-1`, ..., `join-0`, `join-1`, ...).
+Explicitně nepojmenovaným tabulkám jsou skriptem přiřazeny sekvenčně číslované názvy (`select-0`, `select-1`, ..., `main-select-0`, `main-select-1`, ..., `exists-select-0`, `exists-select-1`, ..., `union-select-0`, `union-select-1`, ..., `join-0`, `join-1`, ...).
 
 Na konci souboru pak je pro úplnost znovu zopakován seznam tabulek z DB, které jsou použity ve zpracovávaném SQL dotazu.
